@@ -6,7 +6,6 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
-  AuthOrchestrationOperateScope,
   defaultInstanceIdForDriver,
   type EnvironmentId,
   PROVIDER_DISPLAY_NAMES,
@@ -40,6 +39,7 @@ import { usePrimarySessionState } from "../../environments/primary";
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { resolveAppModelSelectionState } from "../../modelSelection";
+import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
   useEnvironments,
   usePrimaryEnvironmentId,
@@ -93,7 +93,8 @@ import {
 import {
   buildProviderEnvironmentOptions,
   classifyProviderEnvironmentAccess,
-  type ProviderOperateAccess,
+  type ProviderEnvironmentAccess,
+  resolvePrimaryOperateAccess,
   resolveSelectedProviderEnvironmentId,
 } from "./ProviderSettingsPanel.logic";
 
@@ -177,27 +178,28 @@ function connectionDotClassName(environment: EnvironmentPresentation): string {
 
 function EnvironmentUnavailableRow({
   environment,
-  accessKind,
+  access,
 }: {
   readonly environment: EnvironmentPresentation;
-  readonly accessKind: "loading" | "unavailable" | "error";
+  readonly access: Exclude<ProviderEnvironmentAccess, { kind: "editable" | "read-only" }>;
 }) {
-  const title =
-    accessKind === "loading"
-      ? "Loading provider settings"
-      : accessKind === "error"
-        ? "Could not connect to this device"
-        : "Provider settings are unavailable";
-  const description =
-    accessKind === "loading"
-      ? `Waiting for ${environment.label}'s configuration.`
-      : connectionStatusText(environment.connection);
+  const isLoading = access.kind === "loading";
+  const title = isLoading
+    ? "Loading provider settings"
+    : access.kind === "error"
+      ? "Could not connect to this device"
+      : "Provider settings are unavailable";
+  const description = isLoading
+    ? access.reason === "permissions"
+      ? "Checking what this session is allowed to change."
+      : `Waiting for ${environment.label}'s configuration.`
+    : connectionStatusText(environment.connection);
   return (
     <SettingsSection title="Providers">
       <SettingsRow
         title={
           <span className="inline-flex items-center gap-2">
-            {accessKind === "loading" ? (
+            {isLoading ? (
               <LoaderIcon className="size-3.5 animate-spin text-muted-foreground" />
             ) : null}
             {title}
@@ -316,20 +318,12 @@ function SelectedEnvironmentProviderSettings({
 }) {
   const primarySessionState = usePrimarySessionState();
   const isPrimary = environment.entry.target._tag === "PrimaryConnectionTarget";
-  // Remote connection brokers request the standard client scopes, which include
-  // orchestration:operate. The environment RPC layer remains authoritative if a
-  // custom remote credential grants less access.
-  const operateAccess: ProviderOperateAccess = !isPrimary
-    ? "granted"
-    : window.desktopBridge
-      ? "granted"
-      : primarySessionState.isPending
-        ? "pending"
-        : primarySessionState.data?.authenticated
-          ? (primarySessionState.data.scopes ?? []).includes(AuthOrchestrationOperateScope)
-            ? "granted"
-            : "denied"
-          : "denied";
+  const operateAccess = resolvePrimaryOperateAccess({
+    isPrimary,
+    hasDesktopBridge: Boolean(window.desktopBridge),
+    session: primarySessionState.data,
+    isPending: primarySessionState.isPending,
+  });
   const access = classifyProviderEnvironmentAccess({
     connectionPhase: environment.connection.phase,
     hasServerConfig: environment.serverConfig !== null,
@@ -339,7 +333,7 @@ function SelectedEnvironmentProviderSettings({
     return <ReadOnlyProviderSettings environment={environment} />;
   }
   if (access.kind !== "editable") {
-    return <EnvironmentUnavailableRow environment={environment} accessKind={access.kind} />;
+    return <EnvironmentUnavailableRow environment={environment} access={access} />;
   }
   return (
     <EnvironmentProviderSettings
@@ -360,30 +354,33 @@ function ReadOnlyProviderSettings({
 }: {
   readonly environment: EnvironmentPresentation;
 }) {
-  const providers = environment.serverConfig?.providers ?? EMPTY_SERVER_PROVIDERS;
+  // `deriveProviderInstanceEntries` resolves the same per-instance display name
+  // the pickers use, so two instances of one driver stay distinguishable here.
+  const entries = deriveProviderInstanceEntries(
+    environment.serverConfig?.providers ?? EMPTY_SERVER_PROVIDERS,
+  );
   return (
     <SettingsSection title="Providers">
       <SettingsRow
         title="Read only"
         description={`This session can view ${environment.label}, but it cannot change provider configuration.`}
       />
-      {providers.map((provider) => {
-        const driverOption = getDriverOption(provider.driver);
-        const summary = getProviderSummary(provider);
-        const versionLabel = getProviderVersionLabel(provider.version);
+      {entries.map((entry) => {
+        const summary = getProviderSummary(entry.snapshot);
+        const versionLabel = getProviderVersionLabel(entry.snapshot.version);
         return (
           <SettingsRow
-            key={provider.instanceId}
+            key={entry.instanceId}
             title={
               <span className="inline-flex items-center gap-2">
                 <span
                   className={cn(
                     "size-2 rounded-full",
-                    PROVIDER_STATUS_STYLES[provider.status as ProviderStatusKey].dot,
+                    PROVIDER_STATUS_STYLES[entry.status as ProviderStatusKey].dot,
                   )}
                   aria-hidden
                 />
-                {driverOption?.label ?? String(provider.driver)}
+                {entry.displayName}
                 {versionLabel ? (
                   <code className="text-[11px] text-muted-foreground">{versionLabel}</code>
                 ) : null}

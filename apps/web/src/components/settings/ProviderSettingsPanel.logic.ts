@@ -1,4 +1,8 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  type AuthSessionState,
+  type EnvironmentId,
+} from "@t3tools/contracts";
 
 export interface ProviderEnvironmentOptionLike {
   readonly environmentId: EnvironmentId;
@@ -44,7 +48,8 @@ export function resolveSelectedProviderEnvironmentId(
 
 export type ProviderEnvironmentAccess =
   | { readonly kind: "editable" }
-  | { readonly kind: "loading" }
+  /** `reason` distinguishes waiting on the device from waiting on permissions. */
+  | { readonly kind: "loading"; readonly reason: "config" | "permissions" }
   | { readonly kind: "read-only" }
   | { readonly kind: "unavailable" }
   | { readonly kind: "error" };
@@ -56,6 +61,39 @@ export type ProviderEnvironmentAccess =
  * permission problem into a failed write.
  */
 export type ProviderOperateAccess = "granted" | "denied" | "pending";
+
+/**
+ * Resolve whether the session may reconfigure providers on an environment.
+ *
+ * Only the primary environment exposes its own granted scopes to the client
+ * today, so remote sessions are optimistic: the connection brokers request
+ * `orchestration:operate`, and the environment RPC layer stays authoritative if
+ * a narrower credential was minted.
+ *
+ * Cached session data wins over an in-flight revalidation. The session atom is
+ * SWR-backed, so it reports `isPending` on every background refresh; treating
+ * that as unknown would flip a working panel back to loading and discard
+ * in-progress edits.
+ */
+export function resolvePrimaryOperateAccess(input: {
+  readonly isPrimary: boolean;
+  readonly hasDesktopBridge: boolean;
+  readonly session: Pick<AuthSessionState, "authenticated" | "scopes"> | null;
+  readonly isPending: boolean;
+}): ProviderOperateAccess {
+  if (!input.isPrimary || input.hasDesktopBridge) {
+    return "granted";
+  }
+  if (input.session === null) {
+    return input.isPending ? "pending" : "denied";
+  }
+  if (!input.session.authenticated) {
+    return "denied";
+  }
+  return (input.session.scopes ?? []).includes(AuthOrchestrationOperateScope)
+    ? "granted"
+    : "denied";
+}
 
 export function classifyProviderEnvironmentAccess(input: {
   readonly connectionPhase:
@@ -74,8 +112,11 @@ export function classifyProviderEnvironmentAccess(input: {
   if (input.connectionPhase !== "connected") {
     return { kind: "unavailable" };
   }
-  if (!input.hasServerConfig || input.operateAccess === "pending") {
-    return { kind: "loading" };
+  if (!input.hasServerConfig) {
+    return { kind: "loading", reason: "config" };
+  }
+  if (input.operateAccess === "pending") {
+    return { kind: "loading", reason: "permissions" };
   }
   if (input.operateAccess === "denied") {
     return { kind: "read-only" };

@@ -1,9 +1,10 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { AuthOrchestrationOperateScope, EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildProviderEnvironmentOptions,
   classifyProviderEnvironmentAccess,
+  resolvePrimaryOperateAccess,
   resolveSelectedProviderEnvironmentId,
 } from "./ProviderSettingsPanel.logic";
 
@@ -62,7 +63,7 @@ describe("provider environment access", () => {
         hasServerConfig: false,
         operateAccess: "granted",
       }),
-    ).toEqual({ kind: "loading" });
+    ).toEqual({ kind: "loading", reason: "config" });
   });
 
   it("waits for unresolved operate access instead of assuming it is editable", () => {
@@ -72,7 +73,7 @@ describe("provider environment access", () => {
         hasServerConfig: true,
         operateAccess: "pending",
       }),
-    ).toEqual({ kind: "loading" });
+    ).toEqual({ kind: "loading", reason: "permissions" });
   });
 
   it("represents known missing operate access as read only", () => {
@@ -106,5 +107,80 @@ describe("provider environment access", () => {
         operateAccess: "granted",
       }),
     ).toEqual({ kind: "error" });
+  });
+});
+
+describe("primary operate access", () => {
+  const authenticated = {
+    authenticated: true as const,
+    scopes: [AuthOrchestrationOperateScope],
+  };
+
+  it("keeps cached session data authoritative while SWR revalidates", () => {
+    expect(
+      resolvePrimaryOperateAccess({
+        isPrimary: true,
+        hasDesktopBridge: false,
+        session: authenticated,
+        isPending: true,
+      }),
+    ).toBe("granted");
+  });
+
+  it("reports pending only before any session has resolved", () => {
+    expect(
+      resolvePrimaryOperateAccess({
+        isPrimary: true,
+        hasDesktopBridge: false,
+        session: null,
+        isPending: true,
+      }),
+    ).toBe("pending");
+  });
+
+  it("denies unauthenticated sessions and sessions without the operate scope", () => {
+    expect(
+      resolvePrimaryOperateAccess({
+        isPrimary: true,
+        hasDesktopBridge: false,
+        session: { authenticated: false },
+        isPending: false,
+      }),
+    ).toBe("denied");
+    expect(
+      resolvePrimaryOperateAccess({
+        isPrimary: true,
+        hasDesktopBridge: false,
+        session: { authenticated: true, scopes: ["orchestration:read"] },
+        isPending: false,
+      }),
+    ).toBe("denied");
+    expect(
+      resolvePrimaryOperateAccess({
+        isPrimary: true,
+        hasDesktopBridge: false,
+        session: null,
+        isPending: false,
+      }),
+    ).toBe("denied");
+  });
+
+  it("grants desktop bridge and remote environments without blocking on the primary session", () => {
+    expect(
+      resolvePrimaryOperateAccess({
+        isPrimary: true,
+        hasDesktopBridge: true,
+        session: null,
+        isPending: true,
+      }),
+    ).toBe("granted");
+    expect(
+      resolvePrimaryOperateAccess({
+        isPrimary: false,
+        hasDesktopBridge: false,
+        session: null,
+        isPending: true,
+      }),
+    ).toBe("granted");
   });
 });
