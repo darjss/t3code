@@ -49,6 +49,14 @@ export type ProviderEnvironmentAccess =
   | { readonly kind: "unavailable" }
   | { readonly kind: "error" };
 
+/**
+ * Whether the session may change provider configuration on an environment.
+ * `pending` means the answer is still unknown, which must not be presented as
+ * editable: rendering controls we already know might be rejected only turns a
+ * permission problem into a failed write.
+ */
+export type ProviderOperateAccess = "granted" | "denied" | "pending";
+
 export function classifyProviderEnvironmentAccess(input: {
   readonly connectionPhase:
     | "available"
@@ -58,7 +66,7 @@ export function classifyProviderEnvironmentAccess(input: {
     | "connected"
     | "error";
   readonly hasServerConfig: boolean;
-  readonly canOperate: boolean | null;
+  readonly operateAccess: ProviderOperateAccess;
 }): ProviderEnvironmentAccess {
   if (input.connectionPhase === "error") {
     return { kind: "error" };
@@ -66,10 +74,10 @@ export function classifyProviderEnvironmentAccess(input: {
   if (input.connectionPhase !== "connected") {
     return { kind: "unavailable" };
   }
-  if (!input.hasServerConfig) {
+  if (!input.hasServerConfig || input.operateAccess === "pending") {
     return { kind: "loading" };
   }
-  if (input.canOperate === false) {
+  if (input.operateAccess === "denied") {
     return { kind: "read-only" };
   }
   return { kind: "editable" };

@@ -50,7 +50,7 @@ describe("provider environment access", () => {
       classifyProviderEnvironmentAccess({
         connectionPhase: "connected",
         hasServerConfig: true,
-        canOperate: true,
+        operateAccess: "granted",
       }),
     ).toEqual({ kind: "editable" });
   });
@@ -60,7 +60,17 @@ describe("provider environment access", () => {
       classifyProviderEnvironmentAccess({
         connectionPhase: "connected",
         hasServerConfig: false,
-        canOperate: true,
+        operateAccess: "granted",
+      }),
+    ).toEqual({ kind: "loading" });
+  });
+
+  it("waits for unresolved operate access instead of assuming it is editable", () => {
+    expect(
+      classifyProviderEnvironmentAccess({
+        connectionPhase: "connected",
+        hasServerConfig: true,
+        operateAccess: "pending",
       }),
     ).toEqual({ kind: "loading" });
   });
@@ -70,7 +80,7 @@ describe("provider environment access", () => {
       classifyProviderEnvironmentAccess({
         connectionPhase: "connected",
         hasServerConfig: true,
-        canOperate: false,
+        operateAccess: "denied",
       }),
     ).toEqual({ kind: "read-only" });
   });
@@ -82,7 +92,7 @@ describe("provider environment access", () => {
         classifyProviderEnvironmentAccess({
           connectionPhase,
           hasServerConfig: true,
-          canOperate: true,
+          operateAccess: "granted",
         }),
       ).toEqual({ kind: "unavailable" });
     },
@@ -93,7 +103,7 @@ describe("provider environment access", () => {
       classifyProviderEnvironmentAccess({
         connectionPhase: "error",
         hasServerConfig: true,
-        canOperate: true,
+        operateAccess: "granted",
       }),
     ).toEqual({ kind: "error" });
   });
