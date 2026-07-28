@@ -12,7 +12,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { BUILT_IN_DRIVERS } from "../builtInDrivers.ts";
 import { PiDriver } from "./PiDriver.ts";
 
-const assert = NodeAssert;
+const assert: typeof NodeAssert = NodeAssert;
 const backgroundPolicyLayer = Layer.mock(BackgroundPolicy.BackgroundPolicy)({
   shouldRunScopeWork: () => Effect.succeed(true),
 });
