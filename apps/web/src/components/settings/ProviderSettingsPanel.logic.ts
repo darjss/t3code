@@ -1,3 +1,4 @@
+import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import {
   AuthOrchestrationOperateScope,
   type AuthSessionState,
@@ -80,12 +81,19 @@ export function resolvePrimaryOperateAccess(input: {
   readonly hasDesktopBridge: boolean;
   readonly session: Pick<AuthSessionState, "authenticated" | "scopes"> | null;
   readonly isPending: boolean;
+  readonly hasError: boolean;
 }): ProviderOperateAccess {
   if (!input.isPrimary || input.hasDesktopBridge) {
     return "granted";
   }
   if (input.session === null) {
-    return input.isPending ? "pending" : "denied";
+    if (input.isPending) {
+      return "pending";
+    }
+    // A failed session fetch is a transport problem, not a permission
+    // decision — locking the panel read-only would misreport it. Stay
+    // optimistic; the environment RPC layer still rejects unauthorized writes.
+    return input.hasError ? "granted" : "denied";
   }
   if (!input.session.authenticated) {
     return "denied";
@@ -96,13 +104,7 @@ export function resolvePrimaryOperateAccess(input: {
 }
 
 export function classifyProviderEnvironmentAccess(input: {
-  readonly connectionPhase:
-    | "available"
-    | "offline"
-    | "connecting"
-    | "reconnecting"
-    | "connected"
-    | "error";
+  readonly connectionPhase: EnvironmentConnectionPhase;
   readonly hasServerConfig: boolean;
   readonly operateAccess: ProviderOperateAccess;
 }): ProviderEnvironmentAccess {

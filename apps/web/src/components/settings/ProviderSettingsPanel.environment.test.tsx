@@ -1,5 +1,4 @@
-import type { Dispatch, ReactElement, SetStateAction } from "react";
-import { isValidElement } from "react";
+import type { ReactElement } from "react";
 import {
   DEFAULT_UNIFIED_SETTINGS,
   EnvironmentId,
@@ -9,6 +8,9 @@ import {
   type UnifiedSettings,
 } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+
+import { visitElements } from "../../test/reactElementTree";
+import { reactHookHarness as hooks } from "../../test/reactHookHarness";
 
 const atoms = vi.hoisted(() => ({
   providers: null as ReadonlyArray<ServerProvider> | null,
@@ -29,77 +31,29 @@ const settingsState = vi.hoisted(() => ({
   updateSettings: vi.fn(),
 }));
 
-const hooks = vi.hoisted(() => {
-  let cursor = 0;
-  let slots: unknown[] = [];
-  const nextIndex = () => cursor++;
-
-  return {
-    beginRender() {
-      cursor = 0;
-    },
-    reset() {
-      cursor = 0;
-      slots = [];
-    },
-    useCallback<T>(callback: T): T {
-      nextIndex();
-      return callback;
-    },
-    useMemo<T>(factory: () => T): T {
-      nextIndex();
-      return factory();
-    },
-    useMemoCache(size: number): unknown[] {
-      const index = nextIndex();
-      if (!slots[index]) {
-        slots[index] = Array.from({ length: size }, () => Symbol.for("react.memo_cache_sentinel"));
-      }
-      return slots[index] as unknown[];
-    },
-    useRef<T>(initialValue: T): { current: T } {
-      const index = nextIndex();
-      if (!slots[index]) {
-        slots[index] = { current: initialValue };
-      }
-      return slots[index] as { current: T };
-    },
-    useState<T>(initialValue: T | (() => T)): [T, Dispatch<SetStateAction<T>>] {
-      const index = nextIndex();
-      if (index >= slots.length) {
-        slots[index] =
-          typeof initialValue === "function" ? (initialValue as () => T)() : initialValue;
-      }
-      const setValue: Dispatch<SetStateAction<T>> = (nextValue) => {
-        const previous = slots[index] as T;
-        slots[index] =
-          typeof nextValue === "function" ? (nextValue as (value: T) => T)(previous) : nextValue;
-      };
-      return [slots[index] as T, setValue];
-    },
-  };
-});
-
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
+  const { reactHookHarness } = await import("../../test/reactHookHarness");
   return {
     ...actual,
-    useCallback: hooks.useCallback,
-    useMemo: hooks.useMemo,
-    useRef: hooks.useRef,
-    useState: hooks.useState,
+    useCallback: reactHookHarness.useCallback,
+    useMemo: reactHookHarness.useMemo,
+    useRef: reactHookHarness.useRef,
+    useState: reactHookHarness.useState,
   };
 });
 
-vi.mock("react/compiler-runtime", () => ({
-  c: hooks.useMemoCache,
-}));
+vi.mock("react/compiler-runtime", async () => {
+  const { reactHookHarness } = await import("../../test/reactHookHarness");
+  return { c: reactHookHarness.useMemoCache };
+});
 
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: () => atoms.providers,
 }));
 
 vi.mock("../../state/server", () => ({
+  EMPTY_SERVER_PROVIDERS: [],
   serverEnvironment: {
     providersValueAtom: () => atoms.providersAtom,
     refreshProviders: atoms.refreshProviders,
@@ -156,26 +110,6 @@ function provider(): ServerProvider {
       message: "Update available.",
     },
   };
-}
-
-function visitElements(
-  node: unknown,
-  visitor: (element: ReactElement<Record<string, unknown>>) => boolean,
-): ReactElement<Record<string, unknown>> | null {
-  if (Array.isArray(node)) {
-    for (const child of node) {
-      const found = visitElements(child, visitor);
-      if (found) return found;
-    }
-    return null;
-  }
-  if (!isValidElement<Record<string, unknown>>(node)) return null;
-  if (visitor(node)) return node;
-  for (const value of Object.values(node.props)) {
-    const found = visitElements(value, visitor);
-    if (found) return found;
-  }
-  return null;
 }
 
 function renderPanel(): ReactElement<Record<string, unknown>> {

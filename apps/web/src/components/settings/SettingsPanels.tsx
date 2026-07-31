@@ -1,11 +1,10 @@
-import { ArchiveIcon, ArchiveX, InfoIcon, LoaderIcon, SettingsIcon } from "lucide-react";
+import { ArchiveIcon, ArchiveX, LoaderIcon, SettingsIcon } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import type { CSSProperties, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   type BackgroundActivityProfile,
-  type BackgroundActivitySettings,
   type DesktopUpdateChannel,
   ProviderDriverKind,
   type ScopedThreadRef,
@@ -32,10 +31,7 @@ import {
   MIN_PROMPT_FONT_SIZE,
   MIN_TERMINAL_FONT_SIZE,
 } from "@t3tools/contracts/settings";
-import {
-  getBackgroundActivityBaseProfile,
-  resolveServerBackgroundActivitySettings,
-} from "@t3tools/shared/backgroundActivitySettings";
+import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { createModelSelection } from "@t3tools/shared/model";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
@@ -117,8 +113,12 @@ import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
+  backgroundActivityOverrideSettings,
   backgroundActivitySharedPolicySettings,
+  durationToSeconds,
   formatDiagnosticsDescription,
+  normalizeIntervalSeconds,
+  PROVIDER_HEALTH_INTERVAL_STEP_SECONDS,
   hasChangedBackgroundActivitySettings,
   isProjectGroupingEnabled,
   projectGroupingModeFromToggle,
@@ -127,6 +127,7 @@ import {
   resolveBackgroundActivityProfileOption,
 } from "./SettingsPanels.logic";
 import {
+  PolicyTooltip,
   SettingResetButton,
   SettingsPageContainer,
   SettingsRow,
@@ -171,11 +172,6 @@ const BACKGROUND_ACTIVITY_PROFILE_LABELS: Record<BackgroundActivityProfile, stri
 };
 
 type BackgroundActivityProfileOption = BackgroundActivityProfile | "advanced";
-type BackgroundActivityOverridePatch = Partial<{
-  [K in keyof BackgroundActivitySettings["overrides"]]:
-    | BackgroundActivitySettings["overrides"][K]
-    | undefined;
-}>;
 
 const BACKGROUND_ACTIVITY_PROFILE_OPTION_LABELS: Record<BackgroundActivityProfileOption, string> = {
   ...BACKGROUND_ACTIVITY_PROFILE_LABELS,
@@ -192,7 +188,6 @@ const BACKGROUND_ACTIVITY_PROFILE_DESCRIPTIONS: Record<BackgroundActivityProfile
 const ADVANCED_BACKGROUND_ACTIVITY_DESCRIPTION =
   "Uses custom background intervals with the selected shared power policy.";
 
-export const PROVIDER_HEALTH_INTERVAL_STEP_SECONDS = 30;
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 const BACKGROUND_ACTIVITY_BOOLEAN_OVERRIDES: ReadonlyArray<{
   readonly key:
@@ -208,17 +203,6 @@ const BACKGROUND_ACTIVITY_BOOLEAN_OVERRIDES: ReadonlyArray<{
   { key: "pauseWhenOnBattery", label: "Pause on battery" },
 ];
 
-export function durationToSeconds(duration: Duration.Duration): number {
-  return Math.round(Duration.toMillis(duration) / 1_000);
-}
-
-export function normalizeIntervalSeconds(value: number | null, minimum = 0): number {
-  if (value === null || !Number.isFinite(value)) {
-    return minimum;
-  }
-  return Math.max(minimum, Math.round(value));
-}
-
 function resetBackgroundActivitySettings() {
   return {
     backgroundActivity: DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
@@ -233,59 +217,6 @@ function backgroundActivityProfileSettings(profile: BackgroundActivityProfile) {
       overrides: {},
     },
   };
-}
-
-export function backgroundActivityOverrideSettings(
-  current: BackgroundActivitySettings,
-  resolved: ReturnType<typeof resolveServerBackgroundActivitySettings>,
-  overrides: BackgroundActivityOverridePatch,
-) {
-  const nextOverrides: BackgroundActivityOverridePatch = {
-    automaticGitFetchInterval: resolved.automaticGitFetchInterval,
-    providerHealthRefreshInterval: resolved.providerHealthRefreshInterval,
-    hostPowerMonitorActiveInterval: resolved.hostPowerMonitorActiveInterval,
-    hostPowerMonitorIdleInterval: resolved.hostPowerMonitorIdleInterval,
-    idleClientTtl: resolved.idleClientTtl,
-    pauseWhenHostLocked: resolved.pauseWhenHostLocked,
-    pauseWhenHostLowPower: resolved.pauseWhenHostLowPower,
-    pauseWhenClientLowPower: resolved.pauseWhenClientLowPower,
-    pauseWhenOnBattery: resolved.pauseWhenOnBattery,
-    ...overrides,
-  };
-  for (const [key, value] of Object.entries(nextOverrides)) {
-    if (value === undefined) {
-      delete nextOverrides[key as keyof typeof nextOverrides];
-    }
-  }
-  return {
-    backgroundActivity: {
-      schemaVersion: 1 as const,
-      profile: "custom" as const,
-      baseProfile: getBackgroundActivityBaseProfile(current),
-      overrides: nextOverrides as BackgroundActivitySettings["overrides"],
-    },
-  };
-}
-
-export function PolicyTooltip({ children }: { readonly children: string }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <button
-            type="button"
-            className="inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
-            aria-label="Background policy details"
-          >
-            <InfoIcon className="size-3.5" />
-          </button>
-        }
-      />
-      <TooltipPopup side="top" className="max-w-72">
-        {children}
-      </TooltipPopup>
-    </Tooltip>
-  );
 }
 
 function AboutVersionTitle() {

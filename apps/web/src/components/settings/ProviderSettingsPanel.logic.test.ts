@@ -123,6 +123,7 @@ describe("primary operate access", () => {
         hasDesktopBridge: false,
         session: authenticated,
         isPending: true,
+        hasError: false,
       }),
     ).toBe("granted");
   });
@@ -134,8 +135,21 @@ describe("primary operate access", () => {
         hasDesktopBridge: false,
         session: null,
         isPending: true,
+        hasError: false,
       }),
     ).toBe("pending");
+  });
+
+  it("treats a failed session fetch as a transport problem, not a denial", () => {
+    expect(
+      resolvePrimaryOperateAccess({
+        isPrimary: true,
+        hasDesktopBridge: false,
+        session: null,
+        isPending: false,
+        hasError: true,
+      }),
+    ).toBe("granted");
   });
 
   it("denies unauthenticated sessions and sessions without the operate scope", () => {
@@ -145,6 +159,7 @@ describe("primary operate access", () => {
         hasDesktopBridge: false,
         session: { authenticated: false },
         isPending: false,
+        hasError: false,
       }),
     ).toBe("denied");
     expect(
@@ -153,6 +168,7 @@ describe("primary operate access", () => {
         hasDesktopBridge: false,
         session: { authenticated: true, scopes: ["orchestration:read"] },
         isPending: false,
+        hasError: false,
       }),
     ).toBe("denied");
     expect(
@@ -161,6 +177,7 @@ describe("primary operate access", () => {
         hasDesktopBridge: false,
         session: null,
         isPending: false,
+        hasError: false,
       }),
     ).toBe("denied");
   });
@@ -172,6 +189,7 @@ describe("primary operate access", () => {
         hasDesktopBridge: true,
         session: null,
         isPending: true,
+        hasError: false,
       }),
     ).toBe("granted");
     expect(
@@ -180,6 +198,7 @@ describe("primary operate access", () => {
         hasDesktopBridge: false,
         session: null,
         isPending: true,
+        hasError: false,
       }),
     ).toBe("granted");
   });

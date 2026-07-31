@@ -12,7 +12,6 @@ import {
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
-  type ServerProvider,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import {
@@ -32,9 +31,10 @@ import {
   RefreshCwIcon,
   TerminalIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { isDesktopLocalConnectionTarget } from "../../connection/desktopLocal";
+import { isElectron } from "../../env";
 import { usePrimarySessionState } from "../../environments/primary";
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
@@ -45,10 +45,14 @@ import {
   usePrimaryEnvironmentId,
   type EnvironmentPresentation,
 } from "../../state/environments";
-import { serverEnvironment } from "../../state/server";
+import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { getRelativeTimeState } from "../../timestampFormat";
-import { ConnectionStatusDot } from "../ConnectionStatusDot";
+import {
+  ConnectionStatusDot,
+  connectionPhaseDotClassName,
+  connectionPhasePingClassName,
+} from "../ConnectionStatusDot";
 import {
   canOneClickUpdateProviderCandidate,
   collectProviderUpdateCandidates,
@@ -75,15 +79,16 @@ import {
   PROVIDER_STATUS_STYLES,
   type ProviderStatusKey,
 } from "./providerStatus";
+import { searchableSetting } from "./settingsSearch";
 import {
   backgroundActivityOverrideSettings,
+  buildProviderInstanceUpdatePatch,
   durationToSeconds,
   normalizeIntervalSeconds,
-  PolicyTooltip,
   PROVIDER_HEALTH_INTERVAL_STEP_SECONDS,
-} from "./SettingsPanels";
-import { buildProviderInstanceUpdatePatch } from "./SettingsPanels.logic";
+} from "./SettingsPanels.logic";
 import {
+  PolicyTooltip,
   SettingResetButton,
   SettingsPageContainer,
   SettingsRow,
@@ -94,11 +99,10 @@ import {
   buildProviderEnvironmentOptions,
   classifyProviderEnvironmentAccess,
   type ProviderEnvironmentAccess,
+  type ProviderOperateAccess,
   resolvePrimaryOperateAccess,
   resolveSelectedProviderEnvironmentId,
 } from "./ProviderSettingsPanel.logic";
-
-const EMPTY_SERVER_PROVIDERS: ReadonlyArray<ServerProvider> = [];
 
 function withoutProviderInstanceKey<V>(
   record: Readonly<Record<ProviderInstanceId, V>> | undefined,
@@ -162,20 +166,6 @@ function providerEnvironmentDetail(environment: EnvironmentPresentation): string
   return environment.displayUrl ?? "Remote device";
 }
 
-function connectionDotClassName(environment: EnvironmentPresentation): string {
-  switch (environment.connection.phase) {
-    case "connected":
-      return "bg-success";
-    case "connecting":
-    case "reconnecting":
-      return "bg-warning";
-    case "error":
-      return "bg-destructive";
-    default:
-      return "bg-muted-foreground/40";
-  }
-}
-
 function EnvironmentUnavailableRow({
   environment,
   access,
@@ -194,19 +184,11 @@ function EnvironmentUnavailableRow({
       ? "Checking what this session is allowed to change."
       : `Waiting for ${environment.label}'s configuration.`
     : connectionStatusText(environment.connection);
+  // No spinner: this state can persist indefinitely for a wedged device, and a
+  // continuously repainting animation would run the whole time.
   return (
     <SettingsSection title="Providers">
-      <SettingsRow
-        title={
-          <span className="inline-flex items-center gap-2">
-            {isLoading ? (
-              <LoaderIcon className="size-3.5 animate-spin text-muted-foreground" />
-            ) : null}
-            {title}
-          </span>
-        }
-        description={description}
-      />
+      <SettingsRow title={title} description={description} />
     </SettingsSection>
   );
 }
@@ -218,6 +200,9 @@ export function ProviderSettingsPanel() {
     () => buildProviderEnvironmentOptions(environments, primaryEnvironmentId),
     [environments, primaryEnvironmentId],
   );
+  // Raw user intent; the effective selection is re-derived every render so a
+  // device that drops out of the catalog falls back without erasing the pick —
+  // if it reappears (e.g. after a reconnect) the selection is restored.
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<EnvironmentId | null>(
     primaryEnvironmentId,
   );
@@ -226,21 +211,14 @@ export function ProviderSettingsPanel() {
     selectedEnvironmentId,
     primaryEnvironmentId,
   );
-  useEffect(() => {
-    if (effectiveEnvironmentId !== selectedEnvironmentId) {
-      setSelectedEnvironmentId(effectiveEnvironmentId);
-    }
-  }, [effectiveEnvironmentId, selectedEnvironmentId]);
   const selectedEnvironment =
     options.find((environment) => environment.environmentId === effectiveEnvironmentId) ?? null;
-  const showDeviceList =
-    options.length === 0 ||
-    options.length > 1 ||
-    options[0]?.entry.target._tag !== "PrimaryConnectionTarget";
+  const onlyPrimaryDevice =
+    options.length === 1 && options[0]?.entry.target._tag === "PrimaryConnectionTarget";
 
   return (
     <SettingsPageContainer>
-      {showDeviceList ? (
+      {!onlyPrimaryDevice ? (
         <SettingsSection title="Devices">
           {options.length === 0 ? (
             // The catalog hydrates asynchronously, so an empty list before it is
@@ -259,9 +237,6 @@ export function ProviderSettingsPanel() {
                 const Icon = providerEnvironmentIcon(environment);
                 const selected = environment.environmentId === effectiveEnvironmentId;
                 const statusText = connectionStatusText(environment.connection);
-                const isPending =
-                  environment.connection.phase === "connecting" ||
-                  environment.connection.phase === "reconnecting";
                 return (
                   <button
                     key={environment.environmentId}
@@ -282,8 +257,8 @@ export function ProviderSettingsPanel() {
                       <span className="flex items-center gap-1.5">
                         <ConnectionStatusDot
                           tooltipText={statusText}
-                          dotClassName={connectionDotClassName(environment)}
-                          pingClassName={isPending ? "bg-warning/60 duration-2000" : null}
+                          dotClassName={connectionPhaseDotClassName(environment.connection.phase)}
+                          pingClassName={connectionPhasePingClassName(environment.connection.phase)}
                         />
                         <span className="truncate text-sm font-medium text-foreground">
                           {environment.label}
@@ -316,14 +291,38 @@ function SelectedEnvironmentProviderSettings({
 }: {
   readonly environment: EnvironmentPresentation;
 }) {
-  const primarySessionState = usePrimarySessionState();
   const isPrimary = environment.entry.target._tag === "PrimaryConnectionTarget";
+  // Only a browser session against the primary needs its scopes checked; the
+  // session atom stays unmounted (no SWR fetch) for every other device.
+  if (isPrimary && !isElectron) {
+    return <PrimarySessionGatedProviderSettings environment={environment} />;
+  }
+  return <AccessGatedProviderSettings environment={environment} operateAccess="granted" />;
+}
+
+function PrimarySessionGatedProviderSettings({
+  environment,
+}: {
+  readonly environment: EnvironmentPresentation;
+}) {
+  const primarySessionState = usePrimarySessionState();
   const operateAccess = resolvePrimaryOperateAccess({
-    isPrimary,
-    hasDesktopBridge: Boolean(window.desktopBridge),
+    isPrimary: true,
+    hasDesktopBridge: false,
     session: primarySessionState.data,
     isPending: primarySessionState.isPending,
+    hasError: primarySessionState.error !== null,
   });
+  return <AccessGatedProviderSettings environment={environment} operateAccess={operateAccess} />;
+}
+
+function AccessGatedProviderSettings({
+  environment,
+  operateAccess,
+}: {
+  readonly environment: EnvironmentPresentation;
+  readonly operateAccess: ProviderOperateAccess;
+}) {
   const access = classifyProviderEnvironmentAccess({
     connectionPhase: environment.connection.phase,
     hasServerConfig: environment.serverConfig !== null,
@@ -419,6 +418,7 @@ export function EnvironmentProviderSettings({
   >(() => new Set());
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
   const refreshingRef = useRef(false);
+  const updatingDriversRef = useRef<Set<ProviderDriverKind>>(new Set());
 
   const providerUpdateCandidates = useMemo(
     () => collectProviderUpdateCandidates(serverProviders),
@@ -477,19 +477,13 @@ export function EnvironmentProviderSettings({
 
   const runProviderUpdate = useCallback(
     async (candidate: ProviderUpdateCandidate) => {
-      let started = false;
-      setUpdatingProviderDrivers((previous) => {
-        if (previous.has(candidate.driver)) {
-          return previous;
-        }
-        started = true;
-        const next = new Set(previous);
-        next.add(candidate.driver);
-        return next;
-      });
-      if (!started) {
+      // Ref-based re-entry guard, mirroring refreshProviders: a state updater
+      // may run after this function returns, so it cannot gate the dispatch.
+      if (updatingDriversRef.current.has(candidate.driver)) {
         return;
       }
+      updatingDriversRef.current.add(candidate.driver);
+      setUpdatingProviderDrivers((previous) => new Set(previous).add(candidate.driver));
 
       const result = await updateProvider({
         environmentId,
@@ -511,6 +505,7 @@ export function EnvironmentProviderSettings({
           }),
         );
       }
+      updatingDriversRef.current.delete(candidate.driver);
       setUpdatingProviderDrivers((previous) => {
         if (!previous.has(candidate.driver)) {
           return previous;
@@ -690,7 +685,7 @@ export function EnvironmentProviderSettings({
   return (
     <>
       <SettingsSection
-        title="Providers"
+        {...searchableSetting("providers")}
         headerAction={
           <div className="flex items-center gap-1.5">
             <ProviderLastChecked lastCheckedAt={lastCheckedAt} />
