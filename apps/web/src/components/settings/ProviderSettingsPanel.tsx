@@ -572,18 +572,19 @@ export function EnvironmentProviderSettings({
             config: legacyConfig,
           } satisfies ProviderInstanceConfig)
         : undefined);
-    if (effectiveInstance === undefined) {
-      continue;
+    // Only the default slot depends on the legacy blob; custom instances for
+    // the driver must still render even when the slot has nothing to show.
+    if (effectiveInstance !== undefined) {
+      const isDirty =
+        explicitInstance !== undefined || !Equal.equals(legacyConfig, defaultLegacyConfig);
+      rows.push({
+        instanceId: defaultInstanceId,
+        instance: effectiveInstance,
+        driver,
+        isDefault: true,
+        isDirty,
+      });
     }
-    const isDirty =
-      explicitInstance !== undefined || !Equal.equals(legacyConfig, defaultLegacyConfig);
-    rows.push({
-      instanceId: defaultInstanceId,
-      instance: effectiveInstance,
-      driver,
-      isDefault: true,
-      isDirty,
-    });
     for (const [id, instance] of instancesByDriver.get(providerSettings.provider) ?? []) {
       if (id === defaultInstanceId) continue;
       rows.push({ instanceId: id, instance, driver: instance.driver, isDefault: false });
