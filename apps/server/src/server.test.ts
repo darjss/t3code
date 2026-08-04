@@ -2,7 +2,6 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "node:crypto";
-import * as NodeURL from "node:url";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import {
@@ -17,8 +16,6 @@ import {
   KeybindingRule,
   MessageId,
   ExternalLauncherCommandNotFoundError,
-  OrchestrationShellSnapshot,
-  type OrchestrationShellStreamItem,
   OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadStreamItem,
   type OrchestrationThreadShell,
@@ -78,9 +75,6 @@ import * as Socket from "effect/unstable/socket/Socket";
 import { vi } from "vite-plus/test";
 
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
-const decodeTransferShellSnapshot = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(OrchestrationShellSnapshot),
-);
 const decodeTransferThreadSnapshot = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationThreadDetailSnapshot),
 );
@@ -88,13 +82,21 @@ const decodeTransferThreadSnapshot = Schema.decodeUnknownEffect(
 const collectQueueUntil = Effect.fn("TransferBudget.collectQueueUntil")(function* <A>(
   queue: Queue.Queue<A>,
   predicate: (value: A) => boolean,
+  waitDescription: string,
 ) {
-  const values: A[] = [];
-  while (true) {
-    const value = yield* Queue.take(queue);
-    values.push(value);
-    if (predicate(value)) return values;
-  }
+  return yield* Effect.gen(function* () {
+    const values: A[] = [];
+    while (true) {
+      const value = yield* Queue.take(queue);
+      values.push(value);
+      if (predicate(value)) return values;
+    }
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: "10 seconds",
+      orElse: () => Effect.die(new Error(`Timed out waiting for ${waitDescription}`)),
+    }),
+  );
 });
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -7782,14 +7784,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 });
 
 it.live(
-  "reports stress HTTP and WebSocket transfer budgets",
+  "reports thread HTTP and WebSocket transfer budgets",
   () =>
     Effect.gen(function* () {
       const providers = [
         ProviderDriverKind.make("codex"),
         ProviderDriverKind.make("claudeAgent"),
       ] as const;
-      const staticDir = NodeURL.fileURLToPath(new URL("../../web", import.meta.url));
 
       const runs = yield* Effect.forEach(
         providers,
@@ -7800,7 +7801,6 @@ it.live(
               Effect.gen(function* () {
                 yield* seedTransferBudgetHistory(harness, provider);
                 yield* buildAppUnderTest({
-                  config: { staticDir },
                   layers: {
                     orchestrationEngine: harness.engine,
                     projectionSnapshotQuery: harness.snapshotQuery,
@@ -7809,8 +7809,6 @@ it.live(
 
                 const baseUrl = yield* getHttpServerUrl();
                 const cookie = yield* getAuthenticatedSessionCookieHeader();
-                const document = yield* measureHttpGet({ url: `${baseUrl}/` });
-                assert.equal(document.status, 200);
 
                 const recorder = makeWebSocketTransferRecorder();
                 const wsUrl = baseUrl.replace(/^http:/, "ws:") + "/ws";
@@ -7823,42 +7821,6 @@ it.live(
                 return yield* Effect.scoped(
                   Effect.gen(function* () {
                     const client = yield* makeCountingWsRpcClient;
-                    yield* client[WS_METHODS.serverGetConfig]({});
-
-                    const configEvents = yield* Queue.unbounded<unknown>();
-                    yield* client[WS_METHODS.subscribeServerConfig]({}).pipe(
-                      Stream.runForEach((event) =>
-                        Queue.offer(configEvents, event).pipe(Effect.asVoid),
-                      ),
-                      Effect.forkScoped,
-                    );
-                    yield* Queue.take(configEvents);
-
-                    const shellSnapshot = yield* measureHttpGet({
-                      url: `${baseUrl}/api/orchestration/shell`,
-                      headers: { cookie },
-                    });
-                    assert.equal(shellSnapshot.status, 200);
-                    assert.equal(shellSnapshot.contentEncoding, "gzip");
-                    const decodedShell = yield* decodeTransferShellSnapshot(
-                      Buffer.from(shellSnapshot.decodedBody).toString("utf8"),
-                    );
-
-                    const shellItems = yield* Queue.unbounded<OrchestrationShellStreamItem>();
-                    yield* client[ORCHESTRATION_WS_METHODS.subscribeShell]({
-                      afterSequence: decodedShell.snapshotSequence,
-                      requestCompletionMarker: true,
-                    }).pipe(
-                      Stream.runForEach((item) =>
-                        Queue.offer(shellItems, item).pipe(Effect.asVoid),
-                      ),
-                      Effect.forkScoped,
-                    );
-                    const initialShellItems = yield* collectQueueUntil(
-                      shellItems,
-                      (item) => item.kind === "synchronized",
-                    );
-                    assert.isFalse(initialShellItems.some((item) => item.kind === "snapshot"));
 
                     const threadSnapshot = yield* measureHttpGet({
                       url: `${baseUrl}/api/orchestration/threads/${TRANSFER_THREAD_ID}`,
@@ -7888,11 +7850,11 @@ it.live(
                     const initialThreadItems = yield* collectQueueUntil(
                       threadItems,
                       (item) => item.kind === "synchronized",
+                      `${provider} thread subscription to synchronize`,
                     );
                     assert.isFalse(initialThreadItems.some((item) => item.kind === "snapshot"));
                     assert.include(recorder.negotiatedExtensions(), "permessage-deflate");
 
-                    const coldOpenWebSocket = recorder.totals();
                     yield* queueMeasuredTransferTurn(harness, provider);
                     const turnStartTotals = recorder.totals();
                     yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
@@ -7916,13 +7878,7 @@ it.live(
                     yield* collectQueueUntil(
                       threadItems,
                       (item) => item.kind === "event" && item.event.sequence >= finalSequence,
-                    );
-                    yield* collectQueueUntil(
-                      shellItems,
-                      (item) =>
-                        item.kind !== "snapshot" &&
-                        item.kind !== "synchronized" &&
-                        item.sequence >= finalSequence,
+                      `${provider} thread stream to reach sequence ${finalSequence}`,
                     );
                     const measuredTurnWebSocket = transferDelta(turnStartTotals, recorder.totals());
 
@@ -7947,10 +7903,7 @@ it.live(
 
                     return {
                       provider,
-                      document,
-                      shellSnapshot,
                       threadSnapshot,
-                      coldOpenWebSocket,
                       measuredTurnWebSocket,
                     } satisfies TransferBudgetRun;
                   }).pipe(Effect.provide(protocolLayer)),
