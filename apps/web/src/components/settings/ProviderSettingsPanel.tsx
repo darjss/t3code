@@ -558,15 +558,23 @@ export function EnvironmentProviderSettings({
     const driver = providerSettings.provider;
     const defaultInstanceId = defaultInstanceIdForDriver(driver);
     const explicitInstance = settings.providerInstances?.[defaultInstanceId];
-    const legacyConfig = legacyProviders[providerSettings.provider]!;
-    const defaultLegacyConfig = defaultLegacyProviders[providerSettings.provider]!;
-    const effectiveInstance: ProviderInstanceConfig =
+    // A remote device may run a server version whose settings predate this
+    // driver, so the legacy mirror can be absent. Without either an explicit
+    // instance or a legacy blob there is nothing to render for the slot.
+    const legacyConfig = legacyProviders[providerSettings.provider];
+    const defaultLegacyConfig = defaultLegacyProviders[providerSettings.provider];
+    const effectiveInstance: ProviderInstanceConfig | undefined =
       explicitInstance ??
-      ({
-        driver,
-        enabled: legacyConfig.enabled,
-        config: legacyConfig,
-      } satisfies ProviderInstanceConfig);
+      (legacyConfig !== undefined
+        ? ({
+            driver,
+            enabled: legacyConfig.enabled,
+            config: legacyConfig,
+          } satisfies ProviderInstanceConfig)
+        : undefined);
+    if (effectiveInstance === undefined) {
+      continue;
+    }
     const isDirty =
       explicitInstance !== undefined || !Equal.equals(legacyConfig, defaultLegacyConfig);
     rows.push({
