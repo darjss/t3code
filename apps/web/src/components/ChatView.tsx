@@ -4774,7 +4774,10 @@ function ChatViewContent(props: ChatViewProps) {
       });
       return;
     }
+    // Legacy plan mode: only intercept /plan and /default when the beta flag
+    // is on, or the thread is already in plan mode (so /default can exit it).
     const standaloneSlashCommand =
+      (settings.planModeEnabled || interactionMode === "plan") &&
       composerImages.length === 0 &&
       sendableComposerTerminalContexts.length === 0 &&
       composerElementContexts.length === 0 &&
