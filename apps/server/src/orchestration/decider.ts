@@ -142,6 +142,41 @@ function threadHasQueuedTurnStart(
   );
 }
 
+// The settled shelf orders by when work ended, so thread.settled stamps the
+// thread's last recorded activity (newest user message or latestTurn
+// timestamp) rather than the settle time — an auto-settle three quiet days
+// later must not float the thread to the top of the shelf. Threads with no
+// recorded activity fall back to the command time.
+function threadLastActivityAt(
+  thread: {
+    readonly messages: ReadonlyArray<{ readonly role: string; readonly createdAt: string }>;
+    readonly latestTurn: {
+      readonly requestedAt: string;
+      readonly startedAt: string | null;
+      readonly completedAt: string | null;
+    } | null;
+  },
+  fallback: string,
+): string {
+  let latest: string | null = null;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  const candidates = [
+    ...thread.messages.filter((message) => message.role === "user").map((m) => m.createdAt),
+    thread.latestTurn?.requestedAt,
+    thread.latestTurn?.startedAt,
+    thread.latestTurn?.completedAt,
+  ];
+  for (const candidate of candidates) {
+    if (candidate == null) continue;
+    const parsed = Date.parse(candidate);
+    if (!Number.isNaN(parsed) && parsed > latestMs) {
+      latest = candidate;
+      latestMs = parsed;
+    }
+  }
+  return latest ?? fallback;
+}
+
 function withEventBase(
   input: Pick<OrchestrationCommand, "commandId"> & {
     readonly aggregateKind: OrchestrationEvent["aggregateKind"];
@@ -497,9 +532,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.settled" as const,
         payload: {
           threadId: command.threadId,
-          // Auto-settle passes the thread's last-activity time so the settled
-          // shelf orders by when work ended, not when the sweep ran.
-          settledAt: alreadySettled ? thread.settledAt : (command.settledAt ?? occurredAt),
+          // Derived server-side from the read model (never from the command)
+          // so callers cannot forge shelf ordering: user settles and the
+          // auto-settle sweep both stamp when the work actually ended.
+          settledAt: alreadySettled ? thread.settledAt : threadLastActivityAt(thread, occurredAt),
           // A re-emission is a projected no-op: keep the existing updatedAt
           // so duplicate settles neither rewind nor churn ordering. A fresh
           // settle stamps the command time.

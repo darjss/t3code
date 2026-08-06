@@ -71,7 +71,10 @@ const makeThreadAutoSettleReactor = (options?: ThreadAutoSettleReactorLiveOption
     // The cached PR state for a thread's checkout, mapped exactly like the
     // clients' old resolveThreadPr: a status only counts when its refName is
     // the thread's branch (a workspace checked out elsewhere can never
-    // determine this thread's PR state, so it gates nothing).
+    // determine this thread's PR state, so it gates nothing). A cached
+    // "open" maps to "open-cached": it may have merged since polling
+    // stopped, so it never permanently blocks the inactivity path — the
+    // verdict asks for a cooldown-limited live verification instead.
     const peekChangeRequestState = Effect.fn("ThreadAutoSettleReactor.peekChangeRequestState")(
       function* (thread: {
         readonly branch: string | null;
@@ -81,19 +84,26 @@ const makeThreadAutoSettleReactor = (options?: ThreadAutoSettleReactorLiveOption
         const status = yield* vcsStatusBroadcaster.peekStatus({ cwd: thread.cwd });
         if (status === null) return "unknown";
         if (status.refName !== thread.branch) return "none";
-        return status.pr?.state ?? "none";
+        const prState = status.pr?.state ?? null;
+        if (prState === null) return "none";
+        return prState === "open" ? "open-cached" : prState;
       },
     );
 
     // Live PR lookup for an inactivity-settle candidate whose cached state is
     // missing or stale-open. Cooldown-limited per cwd and gated on the
     // background policy so an idle laptop is not woken for forge polls.
+    // `verified` is false when the cooldown suppressed the lookup — such
+    // calls are free and must not consume the sweep's verification budget.
     const verifyChangeRequestState = Effect.fn("ThreadAutoSettleReactor.verifyChangeRequestState")(
       function* (thread: {
         readonly branch: string | null;
         readonly cwd: string;
-      }): Effect.fn.Return<AutoSettleChangeRequestState> {
-        if (thread.branch === null) return "none";
+      }): Effect.fn.Return<{
+        readonly state: AutoSettleChangeRequestState;
+        readonly verified: boolean;
+      }> {
+        if (thread.branch === null) return { state: "none", verified: false };
         const now = yield* Clock.currentTimeMillis;
         const mayVerify = yield* Ref.modify(lastPrVerifyAtByCwd, (byCwd) => {
           const lastAt = byCwd.get(thread.cwd);
@@ -104,7 +114,7 @@ const makeThreadAutoSettleReactor = (options?: ThreadAutoSettleReactorLiveOption
           next.set(thread.cwd, now);
           return [true, next] as const;
         });
-        if (!mayVerify) return "unknown";
+        if (!mayVerify) return { state: "unknown", verified: false };
         const status = yield* vcsStatusBroadcaster.refreshStatus(thread.cwd).pipe(
           Effect.catch((error) =>
             Effect.logDebug("thread.auto-settle.pr-verify-failed", {
@@ -113,15 +123,14 @@ const makeThreadAutoSettleReactor = (options?: ThreadAutoSettleReactorLiveOption
             }).pipe(Effect.as(null)),
           ),
         );
-        if (status === null) return "unknown";
-        if (status.refName !== thread.branch) return "none";
-        return status.pr?.state ?? "none";
+        if (status === null) return { state: "unknown", verified: true };
+        if (status.refName !== thread.branch) return { state: "none", verified: true };
+        return { state: status.pr?.state ?? "none", verified: true };
       },
     );
 
     const settleThread = Effect.fn("ThreadAutoSettleReactor.settleThread")(function* (input: {
       readonly threadId: ThreadId;
-      readonly settledAt: string;
     }) {
       const commandId = yield* serverCommandId;
       yield* orchestrationEngine
@@ -129,13 +138,11 @@ const makeThreadAutoSettleReactor = (options?: ThreadAutoSettleReactorLiveOption
           type: "thread.settle",
           commandId,
           threadId: input.threadId,
-          settledAt: input.settledAt,
         })
         .pipe(
           Effect.tap(() =>
             Effect.logInfo("thread.auto-settled", {
               threadId: input.threadId,
-              settledAt: input.settledAt,
             }),
           ),
           // Invariant rejections are routine races (a turn started between
@@ -173,19 +180,23 @@ const makeThreadAutoSettleReactor = (options?: ThreadAutoSettleReactorLiveOption
         });
         if (verdict.kind === "skip") continue;
         if (verdict.kind === "settle") {
-          yield* settleThread({ threadId: thread.id, settledAt: verdict.settledAt });
+          yield* settleThread({ threadId: thread.id });
           continue;
         }
-        // verify-pr: quiet past the window but PR state undetermined.
+        // verify-pr: quiet past the window but PR state undetermined (nothing
+        // cached, or a possibly-stale cached "open").
         if (!mayVerifyPr || verifyBudget <= 0) continue;
-        verifyBudget -= 1;
-        const verified = resolveAutoSettleVerdict(thread, {
+        const verification = yield* verifyChangeRequestState(target);
+        // Cooldown-suppressed lookups are free; only real refreshes (which
+        // hit git and possibly the forge) consume the per-sweep budget.
+        if (verification.verified) verifyBudget -= 1;
+        const reVerdict = resolveAutoSettleVerdict(thread, {
           now,
           autoSettleAfterDays: afterDays,
-          changeRequestState: yield* verifyChangeRequestState(target),
+          changeRequestState: verification.state,
         });
-        if (verified.kind === "settle") {
-          yield* settleThread({ threadId: thread.id, settledAt: verified.settledAt });
+        if (reVerdict.kind === "settle") {
+          yield* settleThread({ threadId: thread.id });
         }
       }
     }).pipe(

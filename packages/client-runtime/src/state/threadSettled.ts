@@ -196,20 +196,35 @@ export function threadWokeAt(
  * The override IS the classification — the server settles (user command or
  * the auto-settle sweep: inactivity window, merged/closed PR) and un-settles
  * on real activity (user message, session start, approval/user-input
- * request), so clients never re-derive it. The one client-side guard:
- * blocked-on-you work stays visible even under a stale "settled" override,
- * covering the beat between a request landing and the server's auto-unsettle
- * event arriving.
+ * request), so clients never re-derive it. The client-side guards only
+ * cover the beat between activity landing and the server's auto-unsettle
+ * event arriving: blocked-on-you work and live sessions stay visible under
+ * a stale override, and a user message newer than settledAt (a queued turn
+ * start the server has not adjudicated yet) keeps the thread active. All
+ * guards compare shell data to shell data — no wall clock.
  */
 export function effectiveSettled(
   shell: Pick<
     OrchestrationThreadShell,
-    "settledOverride" | "hasPendingApprovals" | "hasPendingUserInput" | "session"
+    | "settledOverride"
+    | "settledAt"
+    | "latestUserMessageAt"
+    | "hasPendingApprovals"
+    | "hasPendingUserInput"
+    | "session"
   >,
 ): boolean {
   if (shell.hasPendingApprovals || shell.hasPendingUserInput) return false;
   if (shell.session?.status === "starting" || shell.session?.status === "running") return false;
-  return shell.settledOverride === "settled";
+  if (shell.settledOverride !== "settled") return false;
+  if (
+    shell.settledAt !== null &&
+    shell.latestUserMessageAt !== null &&
+    Date.parse(shell.latestUserMessageAt) > Date.parse(shell.settledAt)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 const HOUR_MS = 60 * 60 * 1_000;

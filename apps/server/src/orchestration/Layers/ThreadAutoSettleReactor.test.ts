@@ -74,6 +74,12 @@ function makeThread(input: {
 function makeHarness(input: {
   readonly threads: ReadonlyArray<OrchestrationThreadShell>;
   readonly settingsOverrides?: Parameters<typeof ServerSettingsService.layerTest>[0];
+  /** Cached VCS status handed to peekStatus; null = nothing cached. */
+  readonly peekStatus?: Parameters<(typeof VcsStatusBroadcaster)["of"]>[0]["peekStatus"];
+  /** Live refreshStatus result; unset = the sweep must not go live. */
+  readonly refreshStatus?: Parameters<(typeof VcsStatusBroadcaster)["of"]>[0]["refreshStatus"];
+  /** Whether the background policy allows live PR lookups. Default false. */
+  readonly opportunisticWork?: boolean;
 }) {
   const dispatched: OrchestrationCommand[] = [];
   const snapshot: OrchestrationShellSnapshot = {
@@ -100,17 +106,16 @@ function makeHarness(input: {
     Layer.provide(
       Layer.succeed(VcsStatusBroadcaster, {
         getStatus: () => Effect.die("getStatus should not be called"),
-        peekStatus: () => Effect.succeed(null),
+        peekStatus: input.peekStatus ?? (() => Effect.succeed(null)),
         refreshLocalStatus: () => Effect.die("refreshLocalStatus should not be called"),
-        refreshStatus: () => Effect.die("refreshStatus should not be called"),
+        refreshStatus:
+          input.refreshStatus ?? (() => Effect.die("refreshStatus should not be called")),
         streamStatus: () => Stream.empty,
       }),
     ),
     Layer.provide(
       Layer.mock(BackgroundPolicy.BackgroundPolicy)({
-        // Not opportunistic: the cold-cwd PR verification path (which would
-        // hit git and the forge) must stay off in these tests.
-        shouldRunOpportunisticWork: Effect.succeed(false),
+        shouldRunOpportunisticWork: Effect.succeed(input.opportunisticWork ?? false),
       }),
     ),
     Layer.provide(ServerSettingsService.layerTest(input.settingsOverrides ?? {})),
@@ -129,7 +134,7 @@ const runSweep = (layer: Layer.Layer<ThreadAutoSettleReactor, ServerSettingsErro
 describe("ThreadAutoSettleReactor", () => {
   // it.live: fixtures are offsets from the real clock the sweep reads; the
   // TestClock's epoch-zero "now" would put every fixture in the future.
-  it.live("settles quiet threads past the window and stamps their last activity", () =>
+  it.live("settles quiet threads past the window", () =>
     Effect.gen(function* () {
       const { dispatched, layer } = makeHarness({
         threads: [
@@ -146,7 +151,6 @@ describe("ThreadAutoSettleReactor", () => {
       expect(command?.type).toBe("thread.settle");
       if (command?.type === "thread.settle") {
         expect(command.threadId).toBe("stale");
-        expect(command.settledAt).toBe(STALE);
         expect(command.commandId.startsWith("server:auto-settle:")).toBe(true);
       }
     }),
@@ -171,6 +175,76 @@ describe("ThreadAutoSettleReactor", () => {
       // must leave the thread alone rather than hide work waiting on review.
       const { dispatched, layer } = makeHarness({
         threads: [makeThread({ id: "stale-branch", activityAt: STALE, branch: "feature/x" })],
+      });
+      yield* runSweep(layer);
+
+      expect(dispatched).toHaveLength(0);
+    }),
+  );
+
+  it.live("re-verifies a stale cached open PR and settles once it turns out merged", () =>
+    Effect.gen(function* () {
+      // The cache still says "open" (polling stopped before the merge). The
+      // sweep must not trust it: cached open triggers a live verification,
+      // which reports merged, and the thread settles.
+      const vcsStatus = (state: "open" | "merged") => ({
+        isRepo: true,
+        hasPrimaryRemote: true,
+        isDefaultRef: false,
+        refName: "feature/x",
+        hasWorkingTreeChanges: false,
+        workingTree: { files: [], insertions: 0, deletions: 0 },
+        hasUpstream: true,
+        aheadCount: 0,
+        behindCount: 0,
+        pr: {
+          number: 42,
+          title: "Feature X",
+          url: "https://github.com/example/repo/pull/42",
+          baseRef: "main",
+          headRef: "feature/x",
+          state,
+        },
+      });
+      const { dispatched, layer } = makeHarness({
+        threads: [makeThread({ id: "stale-open", activityAt: STALE, branch: "feature/x" })],
+        peekStatus: () => Effect.succeed(vcsStatus("open")),
+        refreshStatus: () => Effect.succeed(vcsStatus("merged")),
+        opportunisticWork: true,
+      });
+      yield* runSweep(layer);
+
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0]?.type).toBe("thread.settle");
+    }),
+  );
+
+  it.live("keeps a quiet thread active when live verification confirms the PR is open", () =>
+    Effect.gen(function* () {
+      const vcsStatus = {
+        isRepo: true,
+        hasPrimaryRemote: true,
+        isDefaultRef: false,
+        refName: "feature/x",
+        hasWorkingTreeChanges: false,
+        workingTree: { files: [], insertions: 0, deletions: 0 },
+        hasUpstream: true,
+        aheadCount: 0,
+        behindCount: 0,
+        pr: {
+          number: 42,
+          title: "Feature X",
+          url: "https://github.com/example/repo/pull/42",
+          baseRef: "main",
+          headRef: "feature/x",
+          state: "open" as const,
+        },
+      };
+      const { dispatched, layer } = makeHarness({
+        threads: [makeThread({ id: "stale-open", activityAt: STALE, branch: "feature/x" })],
+        peekStatus: () => Effect.succeed(vcsStatus),
+        refreshStatus: () => Effect.succeed(vcsStatus),
+        opportunisticWork: true,
       });
       yield* runSweep(layer);
 

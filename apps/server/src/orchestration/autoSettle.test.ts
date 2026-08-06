@@ -107,10 +107,9 @@ describe("threadLastActivityAt", () => {
 describe("resolveAutoSettleVerdict", () => {
   const base = { now: NOW, autoSettleAfterDays: 3, changeRequestState: "none" as const };
 
-  it("settles a quiet thread past the window, stamping the last activity", () => {
+  it("settles a quiet thread past the window", () => {
     expect(resolveAutoSettleVerdict(makeShell({ activityAt: STALE }), base)).toEqual({
       kind: "settle",
-      settledAt: STALE,
     });
   });
 
@@ -167,7 +166,6 @@ describe("resolveAutoSettleVerdict", () => {
     for (const changeRequestState of ["merged", "closed"] as const) {
       expect(resolveAutoSettleVerdict(fresh, { ...base, changeRequestState })).toEqual({
         kind: "settle",
-        settledAt: FRESH,
       });
     }
   });
@@ -221,9 +219,22 @@ describe("resolveAutoSettleVerdict", () => {
       activityAt: "2026-04-01T00:00:00.000Z",
       snoozedUntil: "2026-04-02T00:00:00.000Z",
     });
-    expect(resolveAutoSettleVerdict(wokeLongAgo, base)).toEqual({
-      kind: "settle",
-      settledAt: "2026-04-02T00:00:00.000Z",
-    });
+    expect(resolveAutoSettleVerdict(wokeLongAgo, base)).toEqual({ kind: "settle" });
+  });
+
+  it("re-verifies a cached open PR instead of trusting it to block settle", () => {
+    // A cached "open" may be stale (the PR could have merged since polling
+    // stopped), so a quiet thread asks for live verification rather than
+    // staying active forever on stale data.
+    const stale = makeShell({ activityAt: STALE });
+    expect(
+      resolveAutoSettleVerdict(stale, { ...base, changeRequestState: "open-cached" }).kind,
+    ).toBe("verify-pr");
+    // A fresh thread with a cached open PR needs nothing: the inactivity
+    // path is not in play yet.
+    const fresh = makeShell({ activityAt: FRESH });
+    expect(
+      resolveAutoSettleVerdict(fresh, { ...base, changeRequestState: "open-cached" }).kind,
+    ).toBe("skip");
   });
 });

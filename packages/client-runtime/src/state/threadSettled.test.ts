@@ -103,6 +103,27 @@ describe("effectiveSettled", () => {
     });
     expect(effectiveSettled(shell)).toBe(false);
   });
+
+  it("keeps a settled thread active while a newer user message awaits the server's unsettle", () => {
+    // Between a new user message landing and the server's auto-unsettle
+    // projection arriving, the shell still carries the stale override. A
+    // message newer than settledAt marks that window; one older than
+    // settledAt was already adjudicated by the settle itself.
+    const base = makeShell({ settledOverride: "settled", activityAt: null });
+    const reactivated = {
+      ...base,
+      settledAt: "2026-04-09T12:00:00.000Z",
+      latestUserMessageAt: "2026-04-09T12:00:30.000Z",
+    };
+    expect(effectiveSettled(reactivated)).toBe(false);
+
+    const adjudicated = {
+      ...base,
+      settledAt: "2026-04-09T12:00:30.000Z",
+      latestUserMessageAt: "2026-04-09T12:00:00.000Z",
+    };
+    expect(effectiveSettled(adjudicated)).toBe(true);
+  });
 });
 
 describe("hasQueuedTurnStart", () => {

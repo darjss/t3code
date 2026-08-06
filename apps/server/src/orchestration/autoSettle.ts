@@ -21,19 +21,28 @@ export const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
 
 /**
  * Change-request state resolved for a thread's checkout:
- * - "open" / "closed" / "merged": the cwd's cached VCS status matched the
- *   thread's branch and carried this PR state.
+ * - "open" / "closed" / "merged": the cwd's VCS status matched the thread's
+ *   branch and carried this PR state. "open" is only authoritative from a
+ *   LIVE lookup — a cached "open" can be arbitrarily stale (the PR may have
+ *   merged since polling stopped), so the verdict treats it like "unknown"
+ *   on the inactivity path and asks for re-verification.
  * - "none": PR state is decided and there is no gating PR (no branch, no PR
  *   on the branch, or the cwd is checked out elsewhere so the state can
  *   never be determined — same as the clients' old branch-match guard).
- * - "unknown": the thread has a branch but no cached VCS status exists yet;
- *   the sweep should verify with a live lookup before an inactivity settle.
+ * - "unknown": the thread has a branch but no usable status; the sweep must
+ *   verify with a live lookup before an inactivity settle.
  */
-export type AutoSettleChangeRequestState = "open" | "closed" | "merged" | "none" | "unknown";
+export type AutoSettleChangeRequestState =
+  | "open"
+  | "open-cached"
+  | "closed"
+  | "merged"
+  | "none"
+  | "unknown";
 
 export type AutoSettleVerdict =
   | { readonly kind: "skip" }
-  | { readonly kind: "settle"; readonly settledAt: string }
+  | { readonly kind: "settle" }
   | { readonly kind: "verify-pr" };
 
 type AutoSettleShell = Pick<
@@ -107,11 +116,11 @@ function hasQueuedTurnStart(thread: AutoSettleShell, nowMs: number): boolean {
  * explicit override ("settled" is done, "active" is the user's keep-active
  * pin), anything pinned or still snoozed, and anything blocked on the user
  * or mid-work. Past the blockers: a merged/closed PR settles immediately
- * (merge means done, regardless of recency), an open PR blocks the
- * inactivity path entirely, and otherwise the thread settles once its last
- * activity falls outside the configured window. settledAt is stamped with
- * the last-activity time so the settled shelf orders by when work ended,
- * not when the sweep happened to run.
+ * (merge means done, regardless of recency), a live-verified open PR blocks
+ * the inactivity path, and otherwise the thread settles once its last
+ * activity falls outside the configured window — with "unknown" and cached
+ * "open" states asking for a live PR verification first, since either could
+ * be hiding a merge. (The decider stamps settledAt from the read model.)
  */
 export function resolveAutoSettleVerdict(
   thread: AutoSettleShell,
@@ -138,22 +147,24 @@ export function resolveAutoSettleVerdict(
   }
   if (hasQueuedTurnStart(thread, nowMs)) return { kind: "skip" };
 
-  const lastActivityAt = threadLastActivityAt(thread, nowMs);
-
   if (changeRequestState === "merged" || changeRequestState === "closed") {
-    return { kind: "settle", settledAt: lastActivityAt ?? options.now };
+    return { kind: "settle" };
   }
-  // An open PR is unfinished business no matter how long the thread has been
-  // quiet: review can take days, and hiding the thread would bury the work
-  // waiting on it.
+  // A LIVE open PR is unfinished business no matter how long the thread has
+  // been quiet: review can take days, and hiding the thread would bury the
+  // work waiting on it.
   if (changeRequestState === "open") return { kind: "skip" };
   if (autoSettleAfterDays === null) return { kind: "skip" };
+  const lastActivityAt = threadLastActivityAt(thread, nowMs);
   if (lastActivityAt === null) return { kind: "skip" };
   if (Date.parse(lastActivityAt) >= nowMs - autoSettleAfterDays * DAY_MS) {
     return { kind: "skip" };
   }
-  // Quiet past the window, but PR state undetermined: verify before hiding —
-  // the branch may have an open PR nobody has looked at from this server yet.
-  if (changeRequestState === "unknown") return { kind: "verify-pr" };
-  return { kind: "settle", settledAt: lastActivityAt };
+  // Quiet past the window, but PR state undetermined — either nothing cached
+  // or a cached "open" that may have merged since polling stopped. Verify
+  // live before hiding (or keeping) the thread on stale data.
+  if (changeRequestState === "unknown" || changeRequestState === "open-cached") {
+    return { kind: "verify-pr" };
+  }
+  return { kind: "settle" };
 }

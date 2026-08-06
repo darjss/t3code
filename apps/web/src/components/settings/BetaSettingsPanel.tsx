@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useAtomValue } from "@effect/atom-react";
 
 import {
   usePrimarySettings,
@@ -6,6 +7,7 @@ import {
   useUpdateClientSettings,
   useUpdatePrimarySettings,
 } from "../../hooks/useSettings";
+import { primaryServerConfigAtom } from "../../state/server";
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
@@ -22,12 +24,29 @@ function AutoSettleDaysInput({
   value: number;
   onCommit: (days: number) => void;
 }) {
-  // Local draft so the field can be emptied mid-edit; the setting only moves
-  // on valid input and snaps back to the persisted value on blur.
+  // Local draft; commits only when editing FINISHES (blur or Enter), never
+  // per keystroke. The setting drives a live server-side sweep, so a
+  // transient "1" while typing "14" would settle threads a day old before
+  // the real value lands — and un-settling later does not bring them back.
   const [draft, setDraft] = useState(String(value));
   useEffect(() => {
     setDraft(String(value));
   }, [value]);
+
+  const commitDraft = () => {
+    // Number(), not parseInt: "3.5" must be rejected, not truncated to 3.
+    const parsed = Number(draft);
+    if (
+      Number.isInteger(parsed) &&
+      parsed >= AUTO_SETTLE_MIN_DAYS &&
+      parsed <= AUTO_SETTLE_MAX_DAYS
+    ) {
+      if (parsed !== value) onCommit(parsed);
+      setDraft(String(parsed));
+    } else {
+      setDraft(String(value));
+    }
+  };
 
   return (
     <Input
@@ -36,21 +55,11 @@ function AutoSettleDaysInput({
       max={AUTO_SETTLE_MAX_DAYS}
       className="w-full sm:w-24"
       value={draft}
-      onChange={(event) => {
-        setDraft(event.target.value);
-        // Number(), not parseInt: "3.5" must be rejected (not truncated to a
-        // committed 3 while the field shows 3.5) — commit only when the
-        // persisted value matches the displayed one.
-        const parsed = Number(event.target.value);
-        if (
-          Number.isInteger(parsed) &&
-          parsed >= AUTO_SETTLE_MIN_DAYS &&
-          parsed <= AUTO_SETTLE_MAX_DAYS
-        ) {
-          onCommit(parsed);
-        }
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commitDraft}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") commitDraft();
       }}
-      onBlur={() => setDraft(String(value))}
       aria-label="Days of inactivity before auto-settle"
     />
   );
@@ -65,6 +74,10 @@ export function BetaSettingsPanel() {
   );
   const updateClientSettings = useUpdateClientSettings();
   const updateServerSettings = useUpdatePrimarySettings();
+  // Only servers running the auto-settle sweep understand the setting;
+  // showing the knob against an older server would persist a silent no-op.
+  const supportsAutoSettle =
+    useAtomValue(primaryServerConfigAtom)?.environment.capabilities.threadAutoSettle === true;
 
   return (
     <SettingsPageContainer>
@@ -87,7 +100,7 @@ export function BetaSettingsPanel() {
             />
           }
         />
-        {sidebarV2Enabled ? (
+        {sidebarV2Enabled && supportsAutoSettle ? (
           <>
             <SettingsRow
               title={searchableSetting("auto-settle-inactive-threads").title}

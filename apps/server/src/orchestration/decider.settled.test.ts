@@ -108,23 +108,42 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
     }),
   );
 
-  it.effect("stamps a command-provided settledAt (auto-settle backdating)", () =>
+  it.effect("derives settledAt from the thread's last recorded activity", () =>
     Effect.gen(function* () {
-      const backdatedAt = "2025-12-28T00:00:00.000Z";
+      // Shelf ordering keys on when work ENDED. The decider derives the stamp
+      // from the read model — never from the command — so callers cannot
+      // forge it.
+      const lastMessageAt = "2025-12-28T00:00:00.000Z";
       const event = yield* decideOrchestrationCommand({
         command: {
           type: "thread.settle",
-          commandId: CommandId.make("cmd-auto-settle"),
+          commandId: CommandId.make("cmd-settle-backdate"),
           threadId: ThreadId.make("thread-1"),
-          settledAt: backdatedAt,
         },
-        readModel: makeReadModel(null),
+        readModel: makeReadModel(
+          null,
+          null,
+          null,
+          [],
+          [
+            {
+              id: MessageId.make("message-1"),
+              role: "user",
+              text: "hello",
+              attachments: [],
+              turnId: null,
+              streaming: false,
+              createdAt: lastMessageAt,
+              updatedAt: lastMessageAt,
+            },
+          ],
+        ),
       });
       const events = Array.isArray(event) ? event : [event];
       expect(events[0]?.type).toBe("thread.settled");
       if (events[0]?.type === "thread.settled") {
-        expect(events[0].payload.settledAt).toBe(backdatedAt);
-        expect(events[0].payload.updatedAt).not.toBe(backdatedAt);
+        expect(events[0].payload.settledAt).toBe(lastMessageAt);
+        expect(events[0].payload.updatedAt).not.toBe(lastMessageAt);
       }
     }),
   );
