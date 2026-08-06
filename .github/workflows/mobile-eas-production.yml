@@ -140,7 +140,6 @@ jobs:
 
           const bundleId = "com.t3tools.t3code.swiftui"
           const targetBuildNumber = "5"
-          const previousBuildNumber = "4"
           const apiBase = "https://api.appstoreconnect.apple.com/v1"
 
           const required = ["APPLE_API_KEY", "APPLE_API_KEY_ID", "APPLE_API_ISSUER"]
@@ -240,28 +239,74 @@ jobs:
             }
           }
 
-          const previousBuild = await findBuild(previousBuildNumber)
-          if (previousBuild) {
-            const previousReview = await reviewForBuild(previousBuild.id)
-            console.log(`Build ${previousBuildNumber} review: ${previousReview?.attributes?.betaReviewState ?? "NOT_SUBMITTED"}`)
+          const prereleaseVersion = await request(`/builds/${build.id}/preReleaseVersion`)
+          const train = await request(query(`/preReleaseVersions/${prereleaseVersion.data.id}`, {
+            include: "builds",
+            "fields[builds]": "version,uploadedDate,processingState,expired",
+            "limit[builds]": "50",
+          }))
+          const trainBuilds = (train.included ?? [])
+            .filter((candidate) => candidate.type === "builds")
+            .sort((left, right) => Number(left.attributes.version) - Number(right.attributes.version))
+
+          const blockingBuilds = []
+          for (const candidate of trainBuilds) {
+            const candidateReview = await reviewForBuild(candidate.id)
+            const state = candidateReview?.attributes?.betaReviewState ?? "NOT_SUBMITTED"
+            console.log(`Build ${candidate.attributes.version} review: ${state}; expired=${candidate.attributes.expired}`)
+            if (
+              candidate.id !== build.id &&
+              ["WAITING_FOR_REVIEW", "IN_REVIEW"].includes(state)
+            ) {
+              blockingBuilds.push(candidate)
+            }
+          }
+
+          if (blockingBuilds.length > 1) {
+            throw new Error(`Found multiple builds blocking beta review: ${blockingBuilds.map((candidate) => candidate.attributes.version).join(", ")}`)
+          }
+
+          if (blockingBuilds.length === 1) {
+            const blockingBuild = blockingBuilds[0]
+            console.log(`Expiring build ${blockingBuild.attributes.version} so build ${targetBuildNumber} can replace it in beta review.`)
+            await request(`/builds/${blockingBuild.id}`, {
+              method: "PATCH",
+              body: JSON.stringify({
+                data: {
+                  type: "builds",
+                  id: blockingBuild.id,
+                  attributes: { expired: true },
+                },
+              }),
+            })
           }
 
           let review = await reviewForBuild(build.id)
           if (!review) {
-            const submitted = await request("/betaAppReviewSubmissions", {
-              method: "POST",
-              body: JSON.stringify({
-                data: {
-                  type: "betaAppReviewSubmissions",
-                  relationships: {
-                    build: {
-                      data: { type: "builds", id: build.id },
+            for (let attempt = 1; attempt <= 30; attempt += 1) {
+              try {
+                const submitted = await request("/betaAppReviewSubmissions", {
+                  method: "POST",
+                  body: JSON.stringify({
+                    data: {
+                      type: "betaAppReviewSubmissions",
+                      relationships: {
+                        build: {
+                          data: { type: "builds", id: build.id },
+                        },
+                      },
                     },
-                  },
-                },
-              }),
-            })
-            review = submitted.data
+                  }),
+                })
+                review = submitted.data
+                break
+              } catch (error) {
+                const waitingForOldReview = error.status === 422 && error.message.includes("ANOTHER_BUILD_IN_REVIEW")
+                if (!waitingForOldReview || attempt === 30) throw error
+                console.log(`Apple is still clearing the previous beta review; retrying (${attempt}/30).`)
+                await new Promise((resolve) => setTimeout(resolve, 10_000))
+              }
+            }
           }
 
           console.log(`Build ${targetBuildNumber} review: ${review.attributes.betaReviewState}`)
