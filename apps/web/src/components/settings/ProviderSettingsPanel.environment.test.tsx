@@ -81,6 +81,10 @@ vi.mock("../../environments/primary", () => ({
   usePrimarySessionState: () => ({ data: null, error: null, isPending: false, refresh: vi.fn() }),
 }));
 
+vi.mock("../../state/session", () => ({
+  useEnvironmentSessionState: () => ({ data: null, hasError: false, isPending: true }),
+}));
+
 import { EnvironmentProviderSettings } from "./ProviderSettingsPanel";
 
 const environmentId = EnvironmentId.make("remote-device");
@@ -112,11 +116,14 @@ function provider(): ServerProvider {
   };
 }
 
-function renderPanel(): ReactElement<Record<string, unknown>> {
+function renderPanel(options?: {
+  readonly readOnly?: boolean;
+}): ReactElement<Record<string, unknown>> {
   hooks.beginRender();
   return EnvironmentProviderSettings({
     environmentId,
     environmentLabel: "Remote device",
+    ...(options?.readOnly === undefined ? {} : { readOnly: options.readOnly }),
   }) as ReactElement<Record<string, unknown>>;
 }
 
@@ -169,6 +176,35 @@ describe("EnvironmentProviderSettings routing", () => {
       environmentId,
       input: { provider: ProviderDriverKind.make("codex"), instanceId: codexId },
     });
+  });
+
+  it("renders the provider layout inert with a limited-permissions notice when read only", () => {
+    atoms.providers = [provider()];
+    const panel = renderPanel({ readOnly: true });
+
+    const inertWrapper = visitElements(panel, (element) => element.props.inert === true);
+    expect(inertWrapper).not.toBeNull();
+    const providerCard = visitElements(panel, (element) => element.props.instanceId === codexId);
+    expect(providerCard).not.toBeNull();
+
+    const notice = visitElements(panel, (element) => element.props.title === "Limited permissions");
+    expect(notice).not.toBeNull();
+
+    expect(
+      visitElements(panel, (element) => element.props["aria-label"] === "Add provider instance"),
+    ).toBeNull();
+    expect(
+      visitElements(panel, (element) => element.props["aria-label"] === "Refresh provider status"),
+    ).toBeNull();
+  });
+
+  it("keeps the editable layout interactive when not read only", () => {
+    atoms.providers = [provider()];
+    const panel = renderPanel();
+    expect(visitElements(panel, (element) => element.props.inert === true)).toBeNull();
+    expect(
+      visitElements(panel, (element) => element.props.title === "Limited permissions"),
+    ).toBeNull();
   });
 
   it("deletes and resets provider configuration without erasing shared preferences", () => {

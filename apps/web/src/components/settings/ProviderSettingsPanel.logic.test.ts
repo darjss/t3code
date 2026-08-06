@@ -5,6 +5,7 @@ import {
   buildProviderEnvironmentOptions,
   classifyProviderEnvironmentAccess,
   resolvePrimaryOperateAccess,
+  resolveRemoteOperateAccess,
   resolveSelectedProviderEnvironmentId,
 } from "./ProviderSettingsPanel.logic";
 
@@ -198,6 +199,60 @@ describe("primary operate access", () => {
         hasDesktopBridge: false,
         session: null,
         isPending: true,
+        hasError: false,
+      }),
+    ).toBe("granted");
+  });
+});
+
+describe("remote operate access", () => {
+  it("derives access from the environment session's granted scopes", () => {
+    expect(
+      resolveRemoteOperateAccess({
+        session: { authenticated: true, scopes: [AuthOrchestrationOperateScope] },
+        isPending: false,
+        hasError: false,
+      }),
+    ).toBe("granted");
+    expect(
+      resolveRemoteOperateAccess({
+        session: { authenticated: true, scopes: ["orchestration:read"] },
+        isPending: false,
+        hasError: false,
+      }),
+    ).toBe("denied");
+    expect(
+      resolveRemoteOperateAccess({
+        session: { authenticated: false },
+        isPending: false,
+        hasError: false,
+      }),
+    ).toBe("denied");
+  });
+
+  it("reports pending before the first session resolve, then keeps cached data", () => {
+    expect(resolveRemoteOperateAccess({ session: null, isPending: true, hasError: false })).toBe(
+      "pending",
+    );
+    expect(
+      resolveRemoteOperateAccess({
+        session: { authenticated: true, scopes: [AuthOrchestrationOperateScope] },
+        isPending: true,
+        hasError: false,
+      }),
+    ).toBe("granted");
+  });
+
+  it("stays optimistic when the session fetch fails or an older server omits scopes", () => {
+    // Transport failures and pre-scope-reporting servers are not permission
+    // decisions; the environment RPC layer still rejects unauthorized writes.
+    expect(resolveRemoteOperateAccess({ session: null, isPending: false, hasError: true })).toBe(
+      "granted",
+    );
+    expect(
+      resolveRemoteOperateAccess({
+        session: { authenticated: true },
+        isPending: false,
         hasError: false,
       }),
     ).toBe("granted");
