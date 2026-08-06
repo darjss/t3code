@@ -35,7 +35,6 @@ import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgro
 import { createModelSelection } from "@t3tools/shared/model";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
-import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { APP_VERSION, HOSTED_APP_CHANNEL, HOSTED_APP_CHANNEL_LABEL } from "../../branding";
 import {
@@ -69,12 +68,7 @@ import {
 } from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { isMacPlatform } from "../../lib/utils";
-import {
-  primaryServerObservabilityAtom,
-  primaryServerProvidersAtom,
-  serverEnvironment,
-} from "../../state/server";
-import { usePrimaryEnvironment } from "../../state/environments";
+import { primaryServerObservabilityAtom, primaryServerProvidersAtom } from "../../state/server";
 import { useProjects } from "../../state/entities";
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
@@ -132,7 +126,6 @@ import {
   SettingsPageContainer,
   SettingsRow,
   SettingsSection,
-  useRelativeTimeTick,
   useSettingsSearchTargetId,
 } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
