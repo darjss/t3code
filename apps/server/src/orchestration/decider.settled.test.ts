@@ -108,6 +108,27 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
     }),
   );
 
+  it.effect("stamps a command-provided settledAt (auto-settle backdating)", () =>
+    Effect.gen(function* () {
+      const backdatedAt = "2025-12-28T00:00:00.000Z";
+      const event = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.settle",
+          commandId: CommandId.make("cmd-auto-settle"),
+          threadId: ThreadId.make("thread-1"),
+          settledAt: backdatedAt,
+        },
+        readModel: makeReadModel(null),
+      });
+      const events = Array.isArray(event) ? event : [event];
+      expect(events[0]?.type).toBe("thread.settled");
+      if (events[0]?.type === "thread.settled") {
+        expect(events[0].payload.settledAt).toBe(backdatedAt);
+        expect(events[0].payload.updatedAt).not.toBe(backdatedAt);
+      }
+    }),
+  );
+
   it.effect("rejects settling a thread with a live session", () =>
     Effect.gen(function* () {
       for (const status of ["starting", "running"] as const) {

@@ -497,7 +497,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.settled" as const,
         payload: {
           threadId: command.threadId,
-          settledAt: alreadySettled ? thread.settledAt : occurredAt,
+          // Auto-settle passes the thread's last-activity time so the settled
+          // shelf orders by when work ended, not when the sweep ran.
+          settledAt: alreadySettled ? thread.settledAt : (command.settledAt ?? occurredAt),
           // A re-emission is a projected no-op: keep the existing updatedAt
           // so duplicate settles neither rewind nor churn ordering. A fresh
           // settle stamps the command time.

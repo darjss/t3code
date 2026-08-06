@@ -8,7 +8,6 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
-  TurnId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -279,7 +278,7 @@ describe("buildThreadListV2Items", () => {
       ],
       environmentId: null,
       searchQuery: "",
-      now: NOW,
+      snoozeNow: NOW,
     });
 
     // Same createdAt → static sort tiebreaks by id; the point is the woken
@@ -303,7 +302,7 @@ describe("buildThreadListV2Items", () => {
       ],
       environmentId: null,
       searchQuery: "",
-      now: NOW,
+      snoozeNow: NOW,
     });
 
     expect(layout.items.map((item) => item.thread.id)).toEqual(["pinned-settled", "active"]);
@@ -328,18 +327,21 @@ describe("buildThreadListV2Items", () => {
     };
 
     // Before the wake time: the snooze wins; the pin holds underneath.
-    const whileSnoozed = buildThreadListV2Items({ ...snoozedInput, now: NOW });
+    const whileSnoozed = buildThreadListV2Items({ ...snoozedInput, snoozeNow: NOW });
     expect(whileSnoozed.items.map((item) => item.thread.id)).toEqual(["active"]);
     expect(whileSnoozed.snoozedCount).toBe(1);
 
     // After the wake time: the thread returns pinned, back on top.
-    const afterWake = buildThreadListV2Items({ ...snoozedInput, now: "2026-06-03T10:00:00.000Z" });
+    const afterWake = buildThreadListV2Items({
+      ...snoozedInput,
+      snoozeNow: "2026-06-03T10:00:00.000Z",
+    });
     expect(afterWake.items.map((item) => item.thread.id)).toEqual(["pinned-snoozed", "active"]);
     expect(afterWake.items[0]?.pinned).toBe(true);
     expect(afterWake.snoozedCount).toBe(0);
   });
 
-  it("classifies snooze with the second-precise clock and reports the next wake", () => {
+  it("classifies snooze with a second-precise clock and reports the next wake", () => {
     const layout = buildThreadListV2Items({
       threads: [
         makeThread({
@@ -359,8 +361,6 @@ describe("buildThreadListV2Items", () => {
       ],
       environmentId: null,
       searchQuery: "",
-      // Minute-floored partition clock vs precise snooze clock.
-      now: "2026-06-02T00:01:00.000Z",
       snoozeNow: "2026-06-02T00:01:07.500Z",
     });
 
@@ -394,7 +394,7 @@ describe("buildThreadListV2Items", () => {
       ],
       environmentId: null,
       searchQuery: "",
-      now: NOW,
+      snoozeNow: NOW,
       snoozedShelfExpanded: true,
     });
 
@@ -421,7 +421,7 @@ describe("buildThreadListV2Items", () => {
       ],
       environmentId: null,
       searchQuery: "",
-      now: NOW,
+      snoozeNow: NOW,
     });
 
     expect(layout.items).toEqual([]);
@@ -447,7 +447,7 @@ describe("buildThreadListV2Items", () => {
       ],
       environmentId: null,
       searchQuery: "",
-      now: NOW,
+      snoozeNow: NOW,
       selectedThreadKey: `${environmentId}:open`,
     });
 
@@ -469,7 +469,7 @@ describe("buildThreadListV2Items", () => {
       environmentId: null,
       searchQuery: "",
       snoozeEnvironmentIds: new Set(),
-      now: NOW,
+      snoozeNow: NOW,
     });
 
     expect(layout.items.map((item) => item.thread.id)).toEqual(["snoozed"]);
@@ -495,7 +495,7 @@ describe("buildThreadListV2Items", () => {
       ],
       environmentId: null,
       searchQuery: "",
-      now: NOW,
+      snoozeNow: NOW,
     });
 
     expect(layout.items.map((item) => [item.thread.id, item.variant])).toEqual([
@@ -521,7 +521,7 @@ describe("buildThreadListV2Items", () => {
       ],
       environmentId: null,
       searchQuery: "",
-      now: NOW,
+      snoozeNow: NOW,
       settledShelfExpanded: false,
     });
 
@@ -548,7 +548,7 @@ describe("buildThreadListV2Items", () => {
       ],
       environmentId: null,
       searchQuery: "",
-      now: NOW,
+      snoozeNow: NOW,
       settledShelfExpanded: false,
       selectedThreadKey: `${environmentId}:selected`,
     });
@@ -575,7 +575,7 @@ describe("buildThreadListV2Items", () => {
       ],
       environmentId: null,
       searchQuery: "",
-      now: NOW,
+      snoozeNow: NOW,
     });
 
     expect(items.map((item) => item.thread.id)).toEqual(["newer-created", "older-created"]);
@@ -595,7 +595,7 @@ describe("buildThreadListV2Items", () => {
       ],
       environmentId: null,
       searchQuery: "login",
-      now: NOW,
+      snoozeNow: NOW,
     });
 
     expect(items.map((item) => [item.thread.id, item.variant])).toEqual([
@@ -619,7 +619,7 @@ describe("buildThreadListV2Items", () => {
           threadId: thread.id,
         }),
       ]),
-      now: NOW,
+      snoozeNow: NOW,
     });
 
     expect(items.map((item) => item.thread.id)).toEqual(["content-match"]);
@@ -639,7 +639,7 @@ describe("buildThreadListV2Items", () => {
       environmentId: null,
       projectRefs: [{ environmentId, projectId: ProjectId.make("project-1") }],
       searchQuery: "",
-      now: NOW,
+      snoozeNow: NOW,
     });
 
     expect(items.map((item) => item.thread.id)).toEqual(["included"]);
@@ -662,7 +662,7 @@ describe("buildThreadListV2Items", () => {
         { environmentId: remoteEnvironmentId, projectId: ProjectId.make("project-1") },
       ],
       searchQuery: "",
-      now: NOW,
+      snoozeNow: NOW,
     });
 
     expect(items.map((item) => item.thread.id)).toEqual(["local", "remote"]);
@@ -678,18 +678,9 @@ describe("buildThreadListV2Items settled paging", () => {
           id: ThreadId.make(`settled-${index}`),
           title: `Settled ${index}`,
           settledOverride: "settled",
-          settledAt: NOW,
-          latestUserMessageAt: `2026-06-01T0${index}:00:00.000Z`,
-          // A turn adopted the message (same requestedAt): without it the
-          // thread reads as a queued turn start, which never settles.
-          latestTurn: {
-            turnId: TurnId.make(`turn-${index}`),
-            state: "completed",
-            requestedAt: `2026-06-01T0${index}:00:00.000Z`,
-            startedAt: `2026-06-01T0${index}:00:00.000Z`,
-            completedAt: `2026-06-01T0${index}:10:00.000Z`,
-            assistantMessageId: null,
-          },
+          // Auto-settles backdate settledAt to the last activity, so the
+          // shelf orders by when the work ended.
+          settledAt: `2026-06-01T0${index}:10:00.000Z`,
         }),
       ),
     ];
@@ -699,7 +690,7 @@ describe("buildThreadListV2Items settled paging", () => {
       environmentId: null,
       searchQuery: "",
       settledLimit: 2,
-      now: NOW,
+      snoozeNow: NOW,
     });
 
     expect(layout.hiddenSettledCount).toBe(2);
@@ -753,7 +744,7 @@ describe("buildThreadListV2ListItems", () => {
     ],
     environmentId: null,
     searchQuery: "",
-    now: NOW,
+    snoozeNow: NOW,
   });
 
   it("splices queued tasks between the active block and the settled tail", () => {
@@ -786,7 +777,7 @@ describe("buildThreadListV2ListItems", () => {
       threads: [makeThread({ id: ThreadId.make("active"), title: "active" })],
       environmentId: null,
       searchQuery: "",
-      now: NOW,
+      snoozeNow: NOW,
     });
     const items = buildThreadListV2ListItems({
       items: activeOnly.items,
@@ -830,7 +821,7 @@ describe("buildThreadListV2ListItems", () => {
       ],
       environmentId: null,
       searchQuery: "",
-      now: NOW,
+      snoozeNow: NOW,
     });
     const items = buildThreadListV2ListItems({
       items: snoozedLayout.items,

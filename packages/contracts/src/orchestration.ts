@@ -600,6 +600,11 @@ const ThreadSettleCommand = Schema.Struct({
   type: Schema.Literal("thread.settle"),
   commandId: CommandId,
   threadId: ThreadId,
+  // Server auto-settle stamps the thread's last-activity time here so the
+  // settled shelf orders by when work actually ended, not by when the sweep
+  // happened to run. Absent (user-initiated settles) the event stamps the
+  // command time.
+  settledAt: Schema.optionalKey(IsoDateTime),
 });
 
 const ThreadUnsettleCommand = Schema.Struct({

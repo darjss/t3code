@@ -68,10 +68,9 @@ describe("ClientSettings environment identification", () => {
 });
 
 describe("ClientSettings sidebar v2", () => {
-  it("defaults the beta off with a three-day auto-settle threshold", () => {
+  it("defaults the beta off", () => {
     const settings = decodeClientSettings({});
     expect(settings.sidebarV2Enabled).toBe(false);
-    expect(settings.sidebarAutoSettleAfterDays).toBe(3);
   });
 
   it("treats settings written before the beta had a per-channel default as unconfigured", () => {
@@ -98,16 +97,22 @@ describe("ClientSettings sidebar v2", () => {
     expect(patch.sidebarV2Enabled).toBe(false);
     expect(patch.sidebarV2ConfiguredByUser).toBe(true);
   });
+});
+
+describe("ServerSettings thread auto-settle", () => {
+  it("defaults to a three-day auto-settle threshold", () => {
+    expect(decodeServerSettings({}).threadAutoSettleAfterDays).toBe(3);
+  });
 
   it("allows auto-settle by inactivity to be disabled", () => {
     expect(
-      decodeClientSettings({ sidebarAutoSettleAfterDays: null }).sidebarAutoSettleAfterDays,
+      decodeServerSettings({ threadAutoSettleAfterDays: null }).threadAutoSettleAfterDays,
     ).toBeNull();
   });
 
   it.each([-1, 0, 91])("rejects an auto-settle threshold outside 1..90: %s", (value) => {
-    expect(() => decodeClientSettings({ sidebarAutoSettleAfterDays: value })).toThrow();
-    expect(() => decodeClientSettingsPatch({ sidebarAutoSettleAfterDays: value })).toThrow();
+    expect(() => decodeServerSettings({ threadAutoSettleAfterDays: value })).toThrow();
+    expect(() => decodeServerSettingsPatch({ threadAutoSettleAfterDays: value })).toThrow();
   });
 });
 

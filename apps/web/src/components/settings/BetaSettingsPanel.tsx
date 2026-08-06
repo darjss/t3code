@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 
 import {
-  useClientSettings,
+  usePrimarySettings,
   useSidebarV2Enabled,
   useUpdateClientSettings,
+  useUpdatePrimarySettings,
 } from "../../hooks/useSettings";
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
@@ -57,10 +58,13 @@ function AutoSettleDaysInput({
 
 export function BetaSettingsPanel() {
   const sidebarV2Enabled = useSidebarV2Enabled();
-  const sidebarAutoSettleAfterDays = useClientSettings(
-    (settings) => settings.sidebarAutoSettleAfterDays,
+  // Auto-settle is a server setting: the server derives settled state and
+  // every client sees the same shelf, so the knob lives in settings.json.
+  const threadAutoSettleAfterDays = usePrimarySettings(
+    (settings) => settings.threadAutoSettleAfterDays,
   );
-  const updateSettings = useUpdateClientSettings();
+  const updateClientSettings = useUpdateClientSettings();
+  const updateServerSettings = useUpdatePrimarySettings();
 
   return (
     <SettingsPageContainer>
@@ -74,7 +78,7 @@ export function BetaSettingsPanel() {
               // Touching the switch pins the choice, so a nightly build that
               // defaults v2 on does not flip it back after the user opts out.
               onCheckedChange={(checked) =>
-                updateSettings({
+                updateClientSettings({
                   sidebarV2Enabled: Boolean(checked),
                   sidebarV2ConfiguredByUser: true,
                 })
@@ -87,27 +91,27 @@ export function BetaSettingsPanel() {
           <>
             <SettingsRow
               title={searchableSetting("auto-settle-inactive-threads").title}
-              description="Threads with no activity for this long settle automatically. Threads on merged or closed PRs always settle."
+              description="Threads with no activity for this long settle automatically. Threads on merged or closed PRs always settle. Applies on the server, so every device sees the same list."
               control={
                 <Switch
-                  checked={sidebarAutoSettleAfterDays !== null}
+                  checked={threadAutoSettleAfterDays !== null}
                   onCheckedChange={(checked) =>
-                    updateSettings({
-                      sidebarAutoSettleAfterDays: checked ? AUTO_SETTLE_DEFAULT_DAYS : null,
+                    updateServerSettings({
+                      threadAutoSettleAfterDays: checked ? AUTO_SETTLE_DEFAULT_DAYS : null,
                     })
                   }
                   aria-label="Auto-settle inactive threads"
                 />
               }
             />
-            {sidebarAutoSettleAfterDays !== null ? (
+            {threadAutoSettleAfterDays !== null ? (
               <SettingsRow
                 title="Days of inactivity before auto-settle"
                 description="Any new activity un-settles a thread automatically."
                 control={
                   <AutoSettleDaysInput
-                    value={sidebarAutoSettleAfterDays}
-                    onCommit={(days) => updateSettings({ sidebarAutoSettleAfterDays: days })}
+                    value={threadAutoSettleAfterDays}
+                    onCommit={(days) => updateServerSettings({ threadAutoSettleAfterDays: days })}
                   />
                 }
               />
