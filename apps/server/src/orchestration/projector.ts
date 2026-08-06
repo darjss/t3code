@@ -296,6 +296,7 @@ export function projectEvent(
             settledAt: null,
             snoozedUntil: null,
             snoozedAt: null,
+            latestUserMessageAt: null,
             deletedAt: null,
             messages: [],
             activities: [],
@@ -516,10 +517,22 @@ export function projectEvent(
           : [...thread.messages, message];
         const cappedMessages = messages.slice(-MAX_THREAD_MESSAGES);
 
+        // Maintained separately from the capped messages array so the stamp
+        // survives message eviction AND the unhydrated command read model
+        // (which boots with messages: []) — the decider's settle logic keys
+        // on it.
+        const latestUserMessageAt =
+          message.role === "user" &&
+          (thread.latestUserMessageAt == null ||
+            Date.parse(message.createdAt) > Date.parse(thread.latestUserMessageAt))
+            ? message.createdAt
+            : thread.latestUserMessageAt;
+
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
+            latestUserMessageAt,
             updatedAt: event.occurredAt,
           }),
         };

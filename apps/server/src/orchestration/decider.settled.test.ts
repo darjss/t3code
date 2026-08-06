@@ -12,6 +12,7 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 
 import { decideOrchestrationCommand } from "./decider.ts";
 
@@ -110,6 +111,10 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
 
   it.effect("derives settledAt from the thread's last recorded activity", () =>
     Effect.gen(function* () {
+      // The derivation clamps candidates to the command time; advance the
+      // TestClock past the fixtures or its epoch-zero "now" would put every
+      // candidate in the future and clamp them all away.
+      yield* TestClock.setTime(Date.parse(NOW));
       // Shelf ordering keys on when work ENDED. The decider derives the stamp
       // from the read model — never from the command — so callers cannot
       // forge it.
@@ -301,8 +306,9 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
         updatedAt: createdAt,
       });
 
-      // The decider's clock is the Effect test clock, pinned to the epoch:
-      // timestamps here are relative to 1970-01-01T00:00:00.000Z.
+      // Pin the shared test clock explicitly (other tests in this layer move
+      // it): timestamps here are relative to 1970-01-01T00:00:00.000Z.
+      yield* TestClock.setTime(0);
 
       // Within the grace window: genuinely queued, settle rejected.
       const queuedError = yield* decideOrchestrationCommand({

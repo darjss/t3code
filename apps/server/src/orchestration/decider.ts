@@ -104,8 +104,29 @@ function hasOpenBlockingRequest(thread: {
  * as long as the skew lasts, extending the block far past the intended two
  * minutes.
  */
+// The newest user-message time visible to the decider. Reads the projected
+// latestUserMessageAt stamp first — the engine's command read model boots
+// threads with an EMPTY messages array (bodies are never rehydrated), so a
+// messages-only scan silently loses all pre-restart activity — and still
+// scans the in-memory messages as a floor for mid-session freshness.
+function threadLatestUserMessageAtMs(thread: {
+  readonly latestUserMessageAt?: string | null | undefined;
+  readonly messages: ReadonlyArray<{ readonly role: string; readonly createdAt: string }>;
+}): number {
+  const stampedMs =
+    thread.latestUserMessageAt == null
+      ? Number.NEGATIVE_INFINITY
+      : Date.parse(thread.latestUserMessageAt);
+  return thread.messages.reduce(
+    (latest, message) =>
+      message.role === "user" ? Math.max(latest, Date.parse(message.createdAt)) : latest,
+    Number.isNaN(stampedMs) ? Number.NEGATIVE_INFINITY : stampedMs,
+  );
+}
+
 function threadHasQueuedTurnStart(
   thread: {
+    readonly latestUserMessageAt?: string | null | undefined;
     readonly messages: ReadonlyArray<{ readonly role: string; readonly createdAt: string }>;
     readonly latestTurn: {
       readonly requestedAt: string;
@@ -116,11 +137,7 @@ function threadHasQueuedTurnStart(
   },
   occurredAt: string,
 ): boolean {
-  const latestUserMessageAtMs = thread.messages.reduce(
-    (latest, message) =>
-      message.role === "user" ? Math.max(latest, Date.parse(message.createdAt)) : latest,
-    Number.NEGATIVE_INFINITY,
-  );
+  const latestUserMessageAtMs = threadLatestUserMessageAtMs(thread);
   const latestTurnAtMs =
     thread.latestTurn === null
       ? Number.NEGATIVE_INFINITY
@@ -143,38 +160,46 @@ function threadHasQueuedTurnStart(
 }
 
 // The settled shelf orders by when work ended, so thread.settled stamps the
-// thread's last recorded activity (newest user message or latestTurn
-// timestamp) rather than the settle time — an auto-settle three quiet days
-// later must not float the thread to the top of the shelf. Threads with no
-// recorded activity fall back to the command time.
+// thread's last recorded activity (newest user message, latestTurn
+// timestamp, or an elapsed snooze wake) rather than the settle time — an
+// auto-settle three quiet days later must not float the thread to the top
+// of the shelf. Candidates ahead of the command time are ignored: message
+// timestamps are client-supplied and a still-pending snooze wake is not
+// activity, so a skewed clock cannot forge a future shelf position.
+// Threads with no recorded activity fall back to the command time.
 function threadLastActivityAt(
   thread: {
+    readonly latestUserMessageAt?: string | null | undefined;
     readonly messages: ReadonlyArray<{ readonly role: string; readonly createdAt: string }>;
     readonly latestTurn: {
       readonly requestedAt: string;
       readonly startedAt: string | null;
       readonly completedAt: string | null;
     } | null;
+    readonly snoozedUntil?: string | null | undefined;
   },
-  fallback: string,
+  occurredAt: string,
 ): string {
+  const occurredAtMs = Date.parse(occurredAt);
   let latest: string | null = null;
   let latestMs = Number.NEGATIVE_INFINITY;
   const candidates = [
+    thread.latestUserMessageAt,
     ...thread.messages.filter((message) => message.role === "user").map((m) => m.createdAt),
     thread.latestTurn?.requestedAt,
     thread.latestTurn?.startedAt,
     thread.latestTurn?.completedAt,
+    thread.snoozedUntil,
   ];
   for (const candidate of candidates) {
     if (candidate == null) continue;
     const parsed = Date.parse(candidate);
-    if (!Number.isNaN(parsed) && parsed > latestMs) {
+    if (!Number.isNaN(parsed) && parsed > latestMs && parsed <= occurredAtMs) {
       latest = candidate;
       latestMs = parsed;
     }
   }
-  return latest ?? fallback;
+  return latest ?? occurredAt;
 }
 
 function withEventBase(

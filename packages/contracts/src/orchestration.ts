@@ -380,6 +380,11 @@ export const OrchestrationThread = Schema.Struct({
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   // Pending-only state. Optional so older servers remain compatible.
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
+  // Newest user-message time, survives the capped/unhydrated `messages`
+  // array: the engine's command read model boots threads with no message
+  // bodies, and the decider needs this stamp for settle invariants and the
+  // settledAt derivation. Optional for pre-existing payloads.
+  latestUserMessageAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
