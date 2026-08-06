@@ -136,7 +136,7 @@ jobs:
         shell: bash
         run: |
           node <<'NODE'
-          const crypto = require("node:crypto")
+          const crypto = await import("node:crypto")
 
           const bundleId = "com.t3tools.t3code.swiftui"
           const targetBuildNumber = "5"
