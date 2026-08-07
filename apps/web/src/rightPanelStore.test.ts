@@ -130,7 +130,7 @@ describe("rightPanelStore", () => {
         },
         "env-1:thread-B": {
           isOpen: true,
-          activeSurfaceId: null,
+          activeSurfaceId: "diff",
           surfaces: [{ id: "diff", kind: "diff" }],
         },
       },

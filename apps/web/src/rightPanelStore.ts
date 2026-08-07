@@ -229,7 +229,7 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                     ];
                   })
                 : [];
-              const activeSurfaceId = surfaces.some(
+              const persistedActiveSurfaceId = surfaces.some(
                 (surface) => surface.id === validThreadState?.activeSurfaceId,
               )
                 ? (validThreadState?.activeSurfaceId ?? null)
@@ -240,7 +240,12 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                 surfaces.length > 0 &&
                 (typeof validThreadState?.isOpen === "boolean"
                   ? validThreadState.isOpen
-                  : activeSurfaceId !== null);
+                  : persistedActiveSurfaceId !== null);
+              // An open panel needs an active surface: if migration dropped
+              // the persisted one (e.g. plan was active), fall back to the
+              // first survivor instead of rendering an open empty panel.
+              const activeSurfaceId =
+                persistedActiveSurfaceId ?? (isOpen ? (surfaces[0]?.id ?? null) : null);
               return [threadKey, { isOpen, surfaces, activeSurfaceId }];
             },
           ),
