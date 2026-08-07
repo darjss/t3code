@@ -117,9 +117,15 @@ function threadLatestUserMessageAtMs(thread: {
     thread.latestUserMessageAt == null
       ? Number.NEGATIVE_INFINITY
       : Date.parse(thread.latestUserMessageAt);
+  // Skip unparseable candidates: Math.max(x, NaN) is NaN, so one malformed
+  // client-supplied createdAt would otherwise poison the whole reduction and
+  // disable the queued-turn guard.
   return thread.messages.reduce(
-    (latest, message) =>
-      message.role === "user" ? Math.max(latest, Date.parse(message.createdAt)) : latest,
+    (latest, message) => {
+      if (message.role !== "user") return latest;
+      const parsed = Date.parse(message.createdAt);
+      return Number.isNaN(parsed) ? latest : Math.max(latest, parsed);
+    },
     Number.isNaN(stampedMs) ? Number.NEGATIVE_INFINITY : stampedMs,
   );
 }

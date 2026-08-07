@@ -745,6 +745,18 @@ export function projectEvent(
                   assistantMessageId: latestCheckpoint.assistantMessageId,
                 };
 
+          // Recompute the stamp from the retained messages: a revert that
+          // removes the newest user message must not leave the decider
+          // seeing it as still queued (blocking settle/snooze) or backdate
+          // settledAt to reverted-away work.
+          let latestUserMessageAt: string | null = null;
+          for (const message of messages) {
+            if (message.role !== "user") continue;
+            if (latestUserMessageAt === null || message.createdAt > latestUserMessageAt) {
+              latestUserMessageAt = message.createdAt;
+            }
+          }
+
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
@@ -753,6 +765,7 @@ export function projectEvent(
               proposedPlans,
               activities,
               latestTurn,
+              latestUserMessageAt,
               updatedAt: event.occurredAt,
             }),
           };
