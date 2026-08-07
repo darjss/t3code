@@ -1,9 +1,21 @@
+/**
+ * ThreadAutoSettleReactor - Server-side auto-settle sweep.
+ *
+ * The server is the single author of settled state: this reactor periodically
+ * evaluates unsettled threads against the auto-settle policy (inactivity
+ * window from the threadAutoSettleAfterDays server setting, merged/closed PR)
+ * and dispatches thread.settle for the ones that qualify. Clients only read
+ * settledOverride.
+ *
+ * @module ThreadAutoSettleReactor
+ */
 import {
   CommandId,
   DEFAULT_THREAD_AUTO_SETTLE_AFTER_DAYS,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -11,18 +23,26 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
+import type * as Scope from "effect/Scope";
 
-import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
-import { ServerSettingsService } from "../../serverSettings.ts";
-import { forkParked } from "../../serverActivation.ts";
-import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
-import { type AutoSettleChangeRequestState, resolveAutoSettleVerdict } from "../autoSettle.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
-import {
+import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
+import { forkParked } from "../serverActivation.ts";
+import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
+import { type AutoSettleChangeRequestState, resolveAutoSettleVerdict } from "./autoSettle.ts";
+import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
+
+export class ThreadAutoSettleReactor extends Context.Service<
   ThreadAutoSettleReactor,
-  type ThreadAutoSettleReactorShape,
-} from "../Services/ThreadAutoSettleReactor.ts";
+  {
+    /** Start the periodic auto-settle sweep within the provided scope. */
+    readonly start: () => Effect.Effect<void, never, Scope.Scope>;
+    /** Run one sweep immediately. Intended for tests, which must never wait
+        on the timer schedule. */
+    readonly sweepOnce: Effect.Effect<void>;
+  }
+>()("t3/orchestration/ThreadAutoSettleReactor") {}
 
 // A sweep is one shell-snapshot read plus cache-only PR peeks, so it can run
 // often; a merged PR settles its thread within a tick while a client's VCS
@@ -38,12 +58,12 @@ const DEFAULT_PR_VERIFY_COOLDOWN_MS = 30 * 60 * 1_000;
 // threads per sweep instead.
 const PR_VERIFY_MAX_PER_SWEEP = 5;
 
-export interface ThreadAutoSettleReactorLiveOptions {
+export interface ThreadAutoSettleReactorOptions {
   readonly sweepIntervalMs?: number;
   readonly prVerifyCooldownMs?: number;
 }
 
-const makeThreadAutoSettleReactor = (options?: ThreadAutoSettleReactorLiveOptions) =>
+export const make = (options?: ThreadAutoSettleReactorOptions) =>
   Effect.gen(function* () {
     const orchestrationEngine = yield* OrchestrationEngineService;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -157,7 +177,7 @@ const makeThreadAutoSettleReactor = (options?: ThreadAutoSettleReactorLiveOption
         );
     });
 
-    const sweepOnce: ThreadAutoSettleReactorShape["sweepOnce"] = Effect.gen(function* () {
+    const sweepOnce: ThreadAutoSettleReactor["Service"]["sweepOnce"] = Effect.gen(function* () {
       const [snapshot, afterDays, now] = yield* Effect.all([
         projectionSnapshotQuery.getShellSnapshot(),
         autoSettleAfterDays,
@@ -208,7 +228,7 @@ const makeThreadAutoSettleReactor = (options?: ThreadAutoSettleReactorLiveOption
       ),
     );
 
-    const start: ThreadAutoSettleReactorShape["start"] = () =>
+    const start: ThreadAutoSettleReactor["Service"]["start"] = () =>
       Effect.gen(function* () {
         yield* forkParked(
           sweepOnce.pipe(Effect.repeat(Schedule.spaced(Duration.millis(sweepIntervalMs)))),
@@ -216,13 +236,10 @@ const makeThreadAutoSettleReactor = (options?: ThreadAutoSettleReactorLiveOption
         yield* Effect.logInfo("thread.auto-settle.started", { sweepIntervalMs });
       });
 
-    return {
+    return ThreadAutoSettleReactor.of({
       start,
       sweepOnce,
-    } satisfies ThreadAutoSettleReactorShape;
+    });
   });
 
-export const makeThreadAutoSettleReactorLive = (options?: ThreadAutoSettleReactorLiveOptions) =>
-  Layer.effect(ThreadAutoSettleReactor, makeThreadAutoSettleReactor(options));
-
-export const ThreadAutoSettleReactorLive = makeThreadAutoSettleReactorLive();
+export const layer = Layer.effect(ThreadAutoSettleReactor, make());

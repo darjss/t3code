@@ -15,13 +15,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
-import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
-import { ServerSettingsService } from "../../serverSettings.ts";
-import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
-import { ThreadAutoSettleReactor } from "../Services/ThreadAutoSettleReactor.ts";
-import { makeThreadAutoSettleReactorLive } from "./ThreadAutoSettleReactor.ts";
+import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
+import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
+import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
+import { make, ThreadAutoSettleReactor } from "./ThreadAutoSettleReactor.ts";
 
 const NOW_MS = Date.now();
 const STALE = new Date(NOW_MS - 4 * 24 * 60 * 60 * 1_000).toISOString();
@@ -88,7 +87,7 @@ function makeHarness(input: {
     threads: input.threads,
     updatedAt: STALE,
   };
-  const layer = makeThreadAutoSettleReactorLive().pipe(
+  const layer = Layer.effect(ThreadAutoSettleReactor, make()).pipe(
     Layer.provide(
       Layer.mock(OrchestrationEngineService)({
         dispatch: (command) =>
