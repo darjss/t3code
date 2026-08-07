@@ -312,8 +312,14 @@ function WorkflowScriptView({
  * that shape as it settles so completion never yanks rows out from under the
  * user. Manual toggles stick until a later activation begins.
  */
-function PhaseSection({ phase }: { phase: AgentPanelWorkflowGroup["phases"][number] }) {
-  const [open, setOpen] = useState(phase.state === "running");
+function PhaseSection({
+  phase,
+  defaultOpen = false,
+}: {
+  phase: AgentPanelWorkflowGroup["phases"][number];
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen || phase.state === "running");
   const previousState = useRef(phase.state);
 
   useEffect(() => {
@@ -430,7 +436,7 @@ function ExpandedWorkflowSection({
         />
       ) : null}
       {group.phases.map((phase) => (
-        <PhaseSection key={phase.index} phase={phase} />
+        <PhaseSection key={phase.index} phase={phase} defaultOpen={!workflowIsLive(group)} />
       ))}
       {group.unphasedMembers.map((member) => (
         <AgentRow key={member.id} agent={member} />
