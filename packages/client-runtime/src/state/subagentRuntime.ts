@@ -80,6 +80,8 @@ export interface RuntimeSubagent {
   readonly phases: ReadonlyArray<SubagentWorkflowPhase>;
   readonly runHandles: SubagentRunHandles | null;
   readonly recentActivity: ReadonlyArray<SubagentActivityEntry>;
+  /** First retained observation, used as the roster's stable display order. */
+  readonly firstSeenAt: string;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
   readonly updatedAt: string;
@@ -247,6 +249,7 @@ interface MutableAgent {
   phases: ReadonlyArray<SubagentWorkflowPhase>;
   runHandles: SubagentRunHandles | null;
   recentActivity: ReadonlyArray<SubagentActivityEntry>;
+  firstSeenAt: string;
   startedAt: string | null;
   completedAt: string | null;
   updatedAt: string;
@@ -300,6 +303,7 @@ function getOrCreate(
     phases: [],
     runHandles: null,
     recentActivity: [],
+    firstSeenAt: at,
     startedAt: null,
     completedAt: null,
     updatedAt: at,
@@ -726,7 +730,10 @@ export function deriveAgentPanelModel({
     return EMPTY_PANEL_MODEL;
   }
 
-  const workflows = source.filter((agent) => agent.kind === "workflow");
+  const workflows = source
+    .filter((agent) => agent.kind === "workflow")
+    .slice()
+    .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id));
   const workflowIds = new Set(workflows.map((workflow) => workflow.id));
   const members = new Map<string, RuntimeSubagent[]>();
   const direct: RuntimeSubagent[] = [];
@@ -827,9 +834,11 @@ export function deriveAgentPanelModel({
 
   return {
     workflows: workflowGroups,
-    // The fold's insertion order is spawn order. Activity updates should
-    // change a row in place, never reshuffle the roster under the user.
-    directAgents: direct,
+    // Updates and the >100-agent retention ranking must never reshuffle rows
+    // that remain visible.
+    directAgents: direct
+      .slice()
+      .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id)),
     runningCount,
     waitingCount,
     idleCount,

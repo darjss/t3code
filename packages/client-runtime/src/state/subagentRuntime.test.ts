@@ -378,6 +378,33 @@ describe("deriveAgentPanelModel", () => {
     ).toEqual(["direct-a", "direct-b"]);
   });
 
+  it("keeps first-seen order after the roster retention ranking runs", () => {
+    const starts = Array.from({ length: 101 }, (_, index) =>
+      activity(
+        "task.started",
+        { taskId: `capped-${index}`, title: `Agent ${index}` },
+        `2026-08-01T12:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(
+          index % 60,
+        ).padStart(2, "0")}.000Z`,
+      ),
+    );
+    const cappedRoster = fold([
+      ...starts,
+      activity(
+        "task.progress",
+        { taskId: "capped-0", summary: "Newest activity" },
+        "2026-08-01T12:02:00.000Z",
+      ),
+    ]);
+
+    const ids = deriveAgentPanelModel({ agents: cappedRoster }).directAgents.map(
+      (agent) => agent.id,
+    );
+    expect(ids).toHaveLength(100);
+    expect(ids.slice(0, 3)).toEqual(["capped-0", "capped-2", "capped-3"]);
+    expect(ids.at(-1)).toBe("capped-100");
+  });
+
   it("a phase with only pending members never reads as running", () => {
     const pendingRoster = fold([
       activity("task.started", { taskId: "wf-9", taskType: "local_workflow" }),
