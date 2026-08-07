@@ -186,6 +186,34 @@ describe("foldSubagentActivities", () => {
     expect(agents[0]!.usage).toEqual({ totalTokens: 900, inputTokens: 700 });
   });
 
+  it("usage snapshots enrich an existing agent without changing its status", () => {
+    const [agent] = fold([
+      activity("task.started", { taskId: "usage-waiting", taskType: "local_agent" }),
+      activity("task.progress", { taskId: "usage-waiting", status: "waiting" }),
+      activity("task.progress", {
+        taskId: "usage-waiting",
+        usageSnapshot: true,
+        typedUsage: { totalTokens: 1_200 },
+      }),
+    ]);
+
+    expect(agent?.status).toBe("waiting");
+    expect(agent?.usage?.totalTokens).toBe(1_200);
+  });
+
+  it("a retained usage snapshot can still reconstruct a running agent", () => {
+    const [agent] = fold([
+      activity("task.progress", {
+        taskId: "usage-only",
+        usageSnapshot: true,
+        typedUsage: { totalTokens: 800 },
+      }),
+    ]);
+
+    expect(agent?.status).toBe("running");
+    expect(agent?.usage?.totalTokens).toBe(800);
+  });
+
   it("partial terminal usage preserves known breakdown fields", () => {
     const agents = fold([
       activity("task.started", { taskId: "task-6", taskType: "local_agent" }),

@@ -504,14 +504,19 @@ export function foldSubagentActivities(
         // Membership is sticky per taskId: rows after the first (terminal
         // rows often carry only taskId+status, no marker fields) inherit the
         // first row's classification instead of being re-judged.
-        if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
+        const existed = agents.has(taskId);
+        if (!existed && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at);
         fillMetadata(agent, payload);
         if (agent.activationCount === 0) agent.activationCount = 1;
         const explicitStatus = asRuntimeStatus(payload.status);
         if (explicitStatus) {
           applyStatus(agent, explicitStatus, at);
-        } else if (!isTerminalSubagentStatus(agent.status) && agent.status !== "idle") {
+        } else if (
+          (payload.usageSnapshot !== true || !existed) &&
+          !isTerminalSubagentStatus(agent.status) &&
+          agent.status !== "idle"
+        ) {
           applyStatus(agent, "running", at);
         }
         const summary = asString(payload.summary);

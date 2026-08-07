@@ -629,6 +629,7 @@ export function runtimeEventToActivities(
                   taskId: event.payload.taskId,
                   ...title,
                   ...identityLinkage,
+                  usageSnapshot: true,
                   typedUsage: event.payload.typedUsage,
                 },
                 turnId: toTurnId(event.turnId) ?? null,

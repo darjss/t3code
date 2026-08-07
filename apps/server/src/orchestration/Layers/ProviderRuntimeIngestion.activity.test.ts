@@ -49,6 +49,7 @@ describe("runtimeEventToActivities task progress", () => {
     ]);
     const usagePayload = usageActivities[0]?.payload as Record<string, unknown> | undefined;
     expect(usagePayload?.typedUsage).toEqual({ totalTokens: 73_700_000 });
+    expect(usagePayload?.usageSnapshot).toBe(true);
   });
 
   it("splits combined progress and usage into their independent snapshots", () => {
@@ -77,6 +78,7 @@ describe("runtimeEventToActivities task progress", () => {
     expect(progressPayload.status).toBe("running");
     expect(progressPayload).not.toHaveProperty("typedUsage");
     expect(usagePayload.typedUsage).toEqual({ totalTokens: 4_200, toolUses: 7 });
+    expect(usagePayload.usageSnapshot).toBe(true);
     expect(usagePayload).not.toHaveProperty("status");
   });
 });
