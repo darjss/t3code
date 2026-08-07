@@ -827,7 +827,9 @@ export function deriveAgentPanelModel({
 
   return {
     workflows: workflowGroups,
-    directAgents: direct.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    // The fold's insertion order is spawn order. Activity updates should
+    // change a row in place, never reshuffle the roster under the user.
+    directAgents: direct,
     runningCount,
     waitingCount,
     idleCount,

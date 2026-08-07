@@ -362,6 +362,22 @@ describe("deriveAgentPanelModel", () => {
     );
   });
 
+  it("keeps direct spawns in first-seen order as their activity changes", () => {
+    const directRoster = fold([
+      activity("task.started", { taskId: "direct-a", title: "First" }, "2026-08-01T11:00:00.000Z"),
+      activity("task.started", { taskId: "direct-b", title: "Second" }, "2026-08-01T11:00:01.000Z"),
+      activity(
+        "task.progress",
+        { taskId: "direct-a", summary: "Newest activity" },
+        "2026-08-01T11:00:02.000Z",
+      ),
+    ]);
+
+    expect(
+      deriveAgentPanelModel({ agents: directRoster }).directAgents.map((agent) => agent.id),
+    ).toEqual(["direct-a", "direct-b"]);
+  });
+
   it("a phase with only pending members never reads as running", () => {
     const pendingRoster = fold([
       activity("task.started", { taskId: "wf-9", taskType: "local_workflow" }),
