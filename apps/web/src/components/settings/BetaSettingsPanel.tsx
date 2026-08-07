@@ -117,7 +117,7 @@ export function BetaSettingsPanel() {
         ) : null}
         <SettingsRow
           {...searchableSetting("restore-plan-mode")}
-          description="Legacy feature. Brings back the Build/Plan toggle in the composer along with the /plan and /default commands and the Shift+Tab shortcut. Threads already in plan mode always show the toggle so you can exit."
+          description="Legacy feature. Brings back the Build/Plan toggle in the composer along with the /plan and /default commands and the Shift+Tab shortcut. While off, every thread runs in build mode."
           control={
             <Switch
               checked={planModeEnabled}
