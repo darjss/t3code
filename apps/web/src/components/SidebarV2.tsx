@@ -1103,9 +1103,10 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
               {status === "working" && thread.planProgress ? (
                 <span className="min-w-0 flex-1 truncate whitespace-nowrap">
                   {thread.planProgress.step}
+                  {/* Completed count, matching the transcript chip's n/m. */}
                   <span className="text-muted-foreground/50 tabular-nums">
                     {" "}
-                    {thread.planProgress.completedSteps + 1}/{thread.planProgress.totalSteps}
+                    {thread.planProgress.completedSteps}/{thread.planProgress.totalSteps}
                   </span>
                 </span>
               ) : thread.branch ? (

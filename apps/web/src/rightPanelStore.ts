@@ -234,10 +234,13 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
               )
                 ? (validThreadState?.activeSurfaceId ?? null)
                 : null;
+              // A migration that dropped every surface (e.g. plan-only panels
+              // in v9) must not reopen an empty panel.
               const isOpen =
-                typeof validThreadState?.isOpen === "boolean"
+                surfaces.length > 0 &&
+                (typeof validThreadState?.isOpen === "boolean"
                   ? validThreadState.isOpen
-                  : activeSurfaceId !== null;
+                  : activeSurfaceId !== null);
               return [threadKey, { isOpen, surfaces, activeSurfaceId }];
             },
           ),

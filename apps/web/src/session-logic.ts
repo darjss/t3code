@@ -623,10 +623,13 @@ export function deriveTurnPlans(
       continue;
     }
     const plan = planStateFromActivity(activity);
+    const key = activity.turnId ?? "no-turn";
     if (!plan) {
+      // A later snapshot with no steps clears the turn's plan; keeping the
+      // stale entry would freeze the chip on a withdrawn plan.
+      byTurn.delete(key);
       continue;
     }
-    const key = activity.turnId ?? "no-turn";
     const existing = byTurn.get(key);
     if (existing) {
       existing.plan = plan;

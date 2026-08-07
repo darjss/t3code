@@ -1898,10 +1898,17 @@ const make = Effect.gen(function* () {
       }
       // Working-indicator plan progress: current step while the turn runs,
       // cleared on settle so a finished plan never lingers as stale UI.
-      if (event.type === "turn.plan.updated") {
-        threadPlanProgress.recordPlanProgress(thread.id, event.payload.plan);
-      } else if (event.type === "turn.completed" || event.type === "session.exited") {
+      // Events carrying a turn id that conflicts with the active turn are
+      // stale (superseded turn) and must neither overwrite nor clear the
+      // active turn's progress; session.exited always clears.
+      if (event.type === "session.exited") {
         threadPlanProgress.clearThreadPlanProgress(thread.id);
+      } else if (!conflictsWithActiveTurn) {
+        if (event.type === "turn.plan.updated") {
+          threadPlanProgress.recordPlanProgress(thread.id, event.payload.plan);
+        } else if (event.type === "turn.completed" || event.type === "turn.aborted") {
+          threadPlanProgress.clearThreadPlanProgress(thread.id);
+        }
       }
 
       // Sidebar background liveness: fed from the same lifecycle stream,

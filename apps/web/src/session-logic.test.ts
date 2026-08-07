@@ -473,6 +473,30 @@ describe("deriveTurnPlans", () => {
     ];
     expect(deriveTurnPlans(activities)).toEqual([]);
   });
+
+  it("drops a turn's chip when a later snapshot clears the plan", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "plan-set",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "turn.plan.updated",
+        summary: "Plan updated",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { plan: [{ step: "Inspect code", status: "inProgress" }] },
+      }),
+      makeActivity({
+        id: "plan-clear",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "turn.plan.updated",
+        summary: "Plan updated",
+        tone: "info",
+        turnId: "turn-1",
+        payload: { plan: [] },
+      }),
+    ];
+    expect(deriveTurnPlans(activities)).toEqual([]);
+  });
 });
 
 describe("findLatestProposedPlan", () => {
