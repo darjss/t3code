@@ -33,6 +33,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
@@ -1151,6 +1152,19 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
           sessionFileLeases.set(candidateFile, startupLease);
           leasedFile = candidateFile;
           const factory: PiRpcClientFactory = options.makeRpcClient ?? makePiRpcClient;
+          const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          const environment = {
+            ...options.environment,
+            ...(mcpSession
+              ? {
+                  T3_BROWSER_MCP_ENDPOINT: mcpSession.endpoint,
+                  T3_BROWSER_MCP_BEARER_TOKEN: mcpSession.authorizationHeader.replace(
+                    /^Bearer\s+/,
+                    "",
+                  ),
+                }
+              : {}),
+          };
           const spawn = factory({
             command: options.binaryPath,
             args: [
@@ -1160,7 +1174,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
               ...DETERMINISTIC_ARGS,
             ],
             cwd,
-            ...(options.environment ? { env: options.environment } : {}),
+            ...(Object.keys(environment).length > 0 ? { env: environment } : {}),
           }).pipe(
             Effect.provideService(Scope.Scope, scope),
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),

@@ -33,9 +33,12 @@ T3 reads Pi's command catalog when it checks the provider:
 - Pi skills appear in both the `/skill:` menu and the `$` skill menu.
 - Extension `select`, `confirm`, `input`, and `editor` requests use T3's user-input panel.
 - Pi subagents and workflows appear in T3's Agents panel.
+- The optional Pi `t3-browser` extension exposes T3's collaborative browser through one
+  `t3_browser` tool.
 
 Extensions must use Pi's RPC-compatible UI methods for remote input. TUI-only custom views cannot
-run in RPC mode.
+run in RPC mode. The browser extension receives a credential scoped to the current T3 thread and
+cannot call other T3 MCP toolkits.
 
 ## Sessions And Configuration
 
@@ -48,6 +51,6 @@ Pi process without replacing the rest of the server environment.
 
 ## Current Limits
 
-Pi sessions use **Full access** mode. T3 does not add its own Executor or MCP layer to Pi, and it
-does not support restoring a Pi turn from a T3 checkpoint. Pi's own tools and extensions still run
-normally.
+Pi sessions use **Full access** mode. T3 does not add an Executor or generic MCP layer to Pi, and
+it does not support restoring a Pi turn from a T3 checkpoint. Pi's own tools and extensions still
+run normally.
