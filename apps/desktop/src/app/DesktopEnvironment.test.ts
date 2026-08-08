@@ -96,6 +96,13 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.logDir, "/tmp/t3/userdata/logs");
       assert.equal(environment.browserArtifactsDir, "/tmp/t3/userdata/browser-artifacts");
       assert.equal(environment.serverSettingsPath, "/tmp/t3/userdata/settings.json");
+      assert.equal(environment.branding.baseName, "T3-Pi Code");
+      assert.equal(environment.displayName, "T3-Pi Code");
+      assert.equal(environment.appUserModelId, "com.t3tools.t3code.pi");
+      assert.equal(environment.linuxDesktopEntryName, "t3-pi-code.desktop");
+      assert.equal(environment.linuxWmClass, "t3-pi-code");
+      assert.equal(environment.userDataDirName, "t3code");
+      assert.equal(environment.legacyUserDataDirName, "T3 Code (Alpha)");
     }),
   );
 
