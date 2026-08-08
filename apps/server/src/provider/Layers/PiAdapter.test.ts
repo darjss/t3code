@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ApprovalRequestId,
+  EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
@@ -29,6 +30,7 @@ import {
   type PiRpcSpawnOptions,
 } from "../pi/PiRpcClient.ts";
 import type { PiRpcEvent, PiThinkingLevel } from "../pi/PiRpcSchema.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import type { ProviderAdapterError } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { makePiAdapter, type PiRpcClientFactory } from "./PiAdapter.ts";
@@ -263,6 +265,34 @@ describe("PiAdapter", () => {
         ])
           assert.equal(args.includes(arg), false);
       }),
+    );
+  });
+
+  it.effect("passes the thread-scoped browser credential to Pi extensions", () => {
+    const h = makeHarness();
+    const threadId = ThreadId.make("thread");
+    McpProviderSession.setMcpProviderSession({
+      environmentId: EnvironmentId.make("environment"),
+      threadId,
+      providerSessionId: "provider-session",
+      providerInstanceId: instanceId,
+      endpoint: "http://127.0.0.1:13773/mcp",
+      authorizationHeader: "Bearer browser-secret",
+    });
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        assert.deepEqual(h.spawns[0]?.env, {
+          T3_BROWSER_MCP_ENDPOINT: "http://127.0.0.1:13773/mcp",
+          T3_BROWSER_MCP_BEARER_TOKEN: "browser-secret",
+        });
+      }),
+    ).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          McpProviderSession.clearMcpProviderSession(threadId);
+        }),
+      ),
     );
   });
 
