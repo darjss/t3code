@@ -36,6 +36,23 @@ export type PiRpcState = typeof PiRpcState.Type;
 export const PiRpcAvailableModels = Schema.Struct({ models: Schema.Array(PiRpcModel) });
 export type PiRpcAvailableModels = typeof PiRpcAvailableModels.Type;
 
+export const PiRpcCommand = Schema.Struct({
+  name: Schema.String,
+  description: Schema.optional(Schema.String),
+  source: Schema.Literals(["extension", "prompt", "skill"]),
+  sourceInfo: Schema.Struct({
+    path: Schema.String,
+    source: Schema.String,
+    scope: Schema.String,
+    origin: Schema.String,
+    baseDir: Schema.optional(Schema.String),
+  }),
+});
+export type PiRpcCommand = typeof PiRpcCommand.Type;
+
+export const PiRpcCommands = Schema.Struct({ commands: Schema.Array(PiRpcCommand) });
+export type PiRpcCommands = typeof PiRpcCommands.Type;
+
 export const PiRpcResponse = Schema.Struct({
   type: Schema.Literal("response"),
   command: Schema.String,

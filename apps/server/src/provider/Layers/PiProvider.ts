@@ -12,6 +12,7 @@ import {
   type PiRpcError,
   type PiRpcSpawnOptions,
 } from "../pi/PiRpcClient.ts";
+import type { PiRpcCommand } from "../pi/PiRpcSchema.ts";
 import {
   buildServerProvider,
   isCommandMissingCause,
@@ -33,6 +34,33 @@ const models = (settings: PiSettings, discovered = mapPiDiscoveredModels([])) =>
   providerModelsFromSettings(discovered, settings.customModels, {
     optionDescriptors: [],
   });
+
+const mapPiCommands = (commands: ReadonlyArray<PiRpcCommand>) => {
+  const slashCommands = commands.flatMap((command) => {
+    const name = command.name.trim();
+    if (!name) return [];
+    const description = command.description?.trim();
+    return [{ name, ...(description ? { description } : {}) }];
+  });
+  const skills = commands.flatMap((command) => {
+    if (command.source !== "skill" || !command.name.startsWith("skill:")) return [];
+    const name = command.name.slice("skill:".length).trim();
+    const path = command.sourceInfo.path.trim();
+    if (!name || !path) return [];
+    const description = command.description?.trim();
+    const scope = command.sourceInfo.scope.trim();
+    return [
+      {
+        name,
+        path,
+        enabled: true,
+        ...(description ? { description, shortDescription: description } : {}),
+        ...(scope ? { scope } : {}),
+      },
+    ];
+  });
+  return { slashCommands, skills };
+};
 
 const isPiCommandMissingCause = (error: unknown) => {
   const seen = new Set<object>();
@@ -84,6 +112,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
       return yield* Effect.all({
         inventory: client.getAvailableModels(),
         state: client.getState(),
+        commands: client.getCommands(),
       });
     }),
   ).pipe(Effect.exit);
@@ -120,11 +149,14 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
         }
       : undefined,
   );
+  const commands = mapPiCommands(discovery.value.commands.commands);
   return buildServerProvider({
     presentation: PRESENTATION,
     enabled: true,
     checkedAt,
     models: models(settings, discovered),
+    slashCommands: commands.slashCommands,
+    skills: commands.skills,
     probe: {
       installed: true,
       version: null,

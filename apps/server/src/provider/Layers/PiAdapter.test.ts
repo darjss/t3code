@@ -88,6 +88,7 @@ class FakeClient implements PiRpcClient {
       return { models: [{ provider: "openai", id: "gpt-5", reasoning: true }] };
     });
   };
+  getCommands = () => Effect.succeed({ commands: [] });
   setModel = (provider: string, id: string) => Effect.succeed({ provider, id });
   setThinkingLevel = (level: PiThinkingLevel) =>
     Effect.sync(() => {

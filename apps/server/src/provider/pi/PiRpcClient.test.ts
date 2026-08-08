@@ -88,6 +88,38 @@ describe("PiRpcClient transport", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("decodes extension commands, prompt templates, and skills", () =>
+    Effect.gen(function* () {
+      const test = yield* makeIo();
+      const client = yield* makePiRpcTransport(test.io);
+      const commandsFiber = yield* client.getCommands().pipe(Effect.forkScoped);
+      const request = yield* Queue.take(test.writes);
+      expect(request).toContain('"type":"get_commands"');
+      expect(request).toContain('"id":"t3-pi-1"');
+      yield* Queue.offer(
+        test.stdout,
+        bytes(
+          '{"type":"response","command":"get_commands","success":true,"id":"t3-pi-1","data":{"commands":[{"name":"skill:review","description":"Review changes","source":"skill","sourceInfo":{"path":"/tmp/review/SKILL.md","source":"auto","scope":"user","origin":"top-level"}}]}}\n',
+        ),
+      );
+      expect(yield* Fiber.join(commandsFiber)).toEqual({
+        commands: [
+          {
+            name: "skill:review",
+            description: "Review changes",
+            source: "skill",
+            sourceInfo: {
+              path: "/tmp/review/SKILL.md",
+              source: "auto",
+              scope: "user",
+              origin: "top-level",
+            },
+          },
+        ],
+      });
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("bounds oversized remainders and resumes at the next line", () =>
     Effect.gen(function* () {
       const test = yield* makeIo();
