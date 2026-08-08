@@ -23,6 +23,11 @@ describe("ElectronProtocol", () => {
     unhandleMock.mockReset();
   });
 
+  it("uses a production scheme that does not replace T3 Code Nightly", () => {
+    assert.equal(ElectronProtocol.getDesktopScheme(false), "t3code-pi");
+    assert.equal(ElectronProtocol.getDesktopScheme(true), "t3code-dev");
+  });
+
   it.effect("proxies the stable renderer origin to the current app server", () =>
     Effect.gen(function* () {
       let handler: ((request: Request) => Promise<Response>) | undefined;

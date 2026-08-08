@@ -128,7 +128,7 @@ describe("DesktopLinuxUrlHandler", () => {
     const writeError = new DesktopLinuxUrlHandler.DesktopLinuxUrlHandlerRegistrationError({
       step: "write-desktop-entry",
       scheme: "t3code",
-      desktopEntryPath: "/home/alice/.local/share/applications/t3code-url-handler.desktop",
+      desktopEntryPath: "/home/alice/.local/share/applications/t3-pi-code-url-handler.desktop",
       cause: new Error("boom"),
     });
     assert.equal(
@@ -137,7 +137,7 @@ describe("DesktopLinuxUrlHandler", () => {
     );
     assert.equal(
       writeError.desktopEntryPath,
-      "/home/alice/.local/share/applications/t3code-url-handler.desktop",
+      "/home/alice/.local/share/applications/t3-pi-code-url-handler.desktop",
     );
 
     const exitError = new DesktopLinuxUrlHandler.DesktopLinuxUrlHandlerRegistrationError({
@@ -161,17 +161,17 @@ describe("DesktopLinuxUrlHandler", () => {
       assert.equal(recorded.files.length, 1);
       assert.equal(
         recorded.files[0]?.path,
-        "/home/alice/.local/share/applications/t3code-url-handler.desktop",
+        "/home/alice/.local/share/applications/t3-pi-code-url-handler.desktop",
       );
       assert.include(
         recorded.files[0]?.content,
         'Exec="/home/alice/Applications/T3-Code.AppImage" %U',
       );
-      assert.include(recorded.files[0]?.content, "MimeType=x-scheme-handler/t3code;");
+      assert.include(recorded.files[0]?.content, "MimeType=x-scheme-handler/t3code-pi;");
       assert.deepEqual(recorded.commands, [
         {
           command: "xdg-mime",
-          args: ["default", "t3code-url-handler.desktop", "x-scheme-handler/t3code"],
+          args: ["default", "t3-pi-code-url-handler.desktop", "x-scheme-handler/t3code-pi"],
         },
       ]);
     });
@@ -218,7 +218,7 @@ describe("DesktopLinuxUrlHandler", () => {
           module: "FileSystem",
           method: "writeFileString",
           description: "read-only filesystem",
-          pathOrDescriptor: "/home/alice/.local/share/applications/t3code-url-handler.desktop",
+          pathOrDescriptor: "/home/alice/.local/share/applications/t3-pi-code-url-handler.desktop",
         }),
       });
 
