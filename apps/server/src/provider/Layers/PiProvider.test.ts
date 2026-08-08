@@ -69,7 +69,7 @@ it.effect("maps Pi RPC inventory into selectable models", () =>
 
 it.effect("reports a binary missing error wrapped by the Pi RPC protocol as not installed", () =>
   Effect.gen(function* () {
-    const missing = new PlatformError.SystemError({
+    const missing = PlatformError.systemError({
       _tag: "NotFound",
       module: "ChildProcess",
       method: "spawn",

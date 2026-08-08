@@ -34,6 +34,17 @@ const models = (settings: PiSettings, discovered = mapPiDiscoveredModels([])) =>
     optionDescriptors: [],
   });
 
+const isPiCommandMissingCause = (error: unknown) => {
+  const seen = new Set<object>();
+  let current = error;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    if (isCommandMissingCause(current)) return true;
+    seen.add(current);
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return false;
+};
+
 export const makePendingPiProvider = (settings: PiSettings): Effect.Effect<ServerProviderDraft> =>
   DateTime.now.pipe(
     Effect.map(DateTime.formatIso),
@@ -84,7 +95,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
       checkedAt,
       models: models(settings),
       probe: {
-        installed: !isCommandMissingCause(error),
+        installed: !isPiCommandMissingCause(error),
         version: null,
         status: "error",
         auth: { status: "unknown" },
