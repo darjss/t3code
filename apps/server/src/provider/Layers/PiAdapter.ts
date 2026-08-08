@@ -719,7 +719,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
     if (string(event.toolName)?.toLowerCase() !== "workflow") return;
     const details = workflowDetails(event);
     const runId = trimmedString(details?.runId);
-    if (!details || !runId || !Array.isArray(details.agents)) return;
+    if (!details || !runId || !Array.isArray(details.agents) || details.agents.length === 0) return;
     const workflowName = trimmedString(details.name) ?? runId;
     const phases = Array.isArray(details.phases)
       ? details.phases.flatMap((phase, index) => {

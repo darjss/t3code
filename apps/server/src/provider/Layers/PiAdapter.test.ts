@@ -709,6 +709,15 @@ describe("PiAdapter", () => {
             toolCallId: "workflow-1",
             toolName: "workflow",
             partialResult: {
+              content: [{ type: "text", text: "starting" }],
+              details: { ...runningDetails, agents: [] },
+            },
+          },
+          {
+            type: "tool_execution_update",
+            toolCallId: "workflow-1",
+            toolName: "workflow",
+            partialResult: {
               content: [{ type: "text", text: "running" }],
               details: runningDetails,
             },
