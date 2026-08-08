@@ -35,6 +35,7 @@ class FakeClient implements PiRpcClient {
   output = '{"subject":"Ship Pi generation","body":"Use RPC output."}';
   getState = () => Effect.succeed({});
   getAvailableModels = () => Effect.succeed({ models: [] });
+  getCommands = () => Effect.succeed({ commands: [] });
   setModel = (provider: string, modelId: string) =>
     Effect.sync(() => {
       this.models.push([provider, modelId]);
@@ -69,6 +70,7 @@ class FakeClient implements PiRpcClient {
         });
   };
   abort = () => Effect.void;
+  respondToExtensionUi = () => Effect.void;
   close = () =>
     Effect.sync(() => {
       this.closeCalls += 1;
