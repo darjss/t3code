@@ -751,11 +751,21 @@ describe("PiAdapter", () => {
         );
         assert.deepEqual(
           tasks.map((event) => event.type),
-          ["task.started", "task.progress", "task.completed"],
+          ["task.started", "task.started", "task.progress", "task.completed", "task.completed"],
         );
-        const started = tasks.find((event) => event.type === "task.started");
+        const coordinator = tasks.find(
+          (event) => event.type === "task.started" && event.payload.taskType === "local_workflow",
+        );
+        const started = tasks.find(
+          (event) => event.type === "task.started" && event.payload.taskType === "workflow-agent",
+        );
         const progress = tasks.find((event) => event.type === "task.progress");
-        const completed = tasks.find((event) => event.type === "task.completed");
+        const completed = tasks.find(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "task.completed" }> =>
+            event.type === "task.completed" && event.payload.taskType === "workflow-agent",
+        );
+        assert.equal(coordinator?.payload.title, "Audit");
+        assert.equal(started?.payload.parentAgentId, coordinator?.payload.taskId);
         assert.equal(started?.payload.workflowName, "Audit");
         assert.equal(started?.payload.phaseTitle, "Scan");
         assert.equal(progress?.payload.typedUsage?.totalTokens, 12);

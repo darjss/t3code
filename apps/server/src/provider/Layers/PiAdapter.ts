@@ -728,6 +728,32 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
           return title ? [{ index, title }] : [];
         })
       : [];
+    const coordinatorKey = `${runId}:coordinator`;
+    let coordinator = ctx.workflowTasks.get(coordinatorKey);
+    const coordinatorTaskId =
+      coordinator?.taskId ?? RuntimeTaskId.make(`pi-workflow:${coordinatorKey}`);
+    const coordinatorLinkage = {
+      taskType: "local_workflow",
+      title: workflowName,
+      role: "workflow coordinator",
+      workflowName,
+      ...(phases.length > 0 ? { phases } : {}),
+      runHandles: { runId },
+    } as const;
+    if (!coordinator) {
+      coordinator = { taskId: coordinatorTaskId, state: "running" };
+      ctx.workflowTasks.set(coordinatorKey, coordinator);
+      yield* offer({
+        type: "task.started",
+        ...(yield* base(ctx, turn)),
+        payload: {
+          taskId: coordinatorTaskId,
+          description: workflowName,
+          ...coordinatorLinkage,
+        },
+        raw: raw(native),
+      });
+    }
     for (const rawAgent of details.agents) {
       if (!isRecord(rawAgent)) continue;
       const index = finiteNonNegative(rawAgent.index);
@@ -761,6 +787,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
         role: "workflow agent",
         ...(model ? { model } : {}),
         workflowName,
+        parentAgentId: coordinatorTaskId,
         agentIndex: index,
         ...(phaseIndex !== undefined ? { phaseIndex } : {}),
         ...(phaseTitle ? { phaseTitle } : {}),
@@ -809,6 +836,27 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
           raw: raw(native),
         });
       }
+    }
+    const terminalStates = details.agents.flatMap((rawAgent) => {
+      if (!isRecord(rawAgent)) return [];
+      return rawAgent.state === "done" || rawAgent.state === "error" ? [rawAgent.state] : [];
+    });
+    if (
+      coordinator.state === "running" &&
+      terminalStates.length === details.agents.length &&
+      terminalStates.length > 0
+    ) {
+      coordinator.state = terminalStates.includes("error") ? "error" : "done";
+      yield* offer({
+        type: "task.completed",
+        ...(yield* base(ctx, turn)),
+        payload: {
+          taskId: coordinatorTaskId,
+          status: coordinator.state === "error" ? "failed" : "completed",
+          ...coordinatorLinkage,
+        },
+        raw: raw(native),
+      });
     }
   });
 
