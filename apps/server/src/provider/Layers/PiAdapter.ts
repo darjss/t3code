@@ -21,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
@@ -1336,6 +1337,31 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
           yield* failActive(ctx, "Pi prompt failed.", undefined, !reusable);
           if (!reusable) yield* close(ctx);
           return yield* request("prompt", prompted.failure);
+        }
+        if (input.input?.trimStart().startsWith("/")) {
+          const state = yield* ctx.client.getState().pipe(
+            Effect.mapError((cause) => request("get_state", cause)),
+            Effect.option,
+          );
+          if (
+            Option.isSome(state) &&
+            state.value.isStreaming !== true &&
+            ctx.activeTurn === turn &&
+            !turn.terminal
+          ) {
+            yield* publishTerminal(
+              ctx,
+              turn,
+              [
+                {
+                  type: "turn.completed",
+                  ...(yield* base(ctx, turn)),
+                  payload: { state: "completed", stopReason: null },
+                },
+              ],
+              "ready",
+            );
+          }
         }
         return {
           _tag: "Started" as const,

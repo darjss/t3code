@@ -303,6 +303,30 @@ describe("PiAdapter", () => {
     );
   });
 
+  it.effect("settles extension slash commands that do not start an agent", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        const collected = yield* Stream.take(adapter.streamEvents, 2).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        const turn = yield* adapter.sendTurn({
+          threadId: ThreadId.make("thread"),
+          input: "/workflows",
+          modelSelection,
+        });
+        const events = Array.from(yield* Fiber.join(collected));
+        assert.deepEqual(
+          events.map((event) => event.type),
+          ["turn.started", "turn.completed"],
+        );
+        assert.equal(events[1]?.turnId, turn.turnId);
+      }),
+    );
+  });
+
   it.effect("answers extension UI requests while prompt preflight is waiting", () => {
     const h = makeHarness();
     return withAdapter(h, (adapter) =>
