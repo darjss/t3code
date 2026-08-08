@@ -546,6 +546,201 @@ describe("PiAdapter", () => {
     );
   });
 
+  it.effect("projects background subagents into task lifecycle events and a follow-up turn", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        let completedTurns = 0;
+        const collected = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => {
+            if (event.type !== "turn.completed") return false;
+            completedTurns += 1;
+            return completedTurns === 2;
+          }),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* adapter.sendTurn({
+          threadId: ThreadId.make("thread"),
+          input: "delegate this",
+          modelSelection,
+        });
+        yield* Queue.offerAll(h.client.input, [
+          {
+            type: "tool_execution_start",
+            toolCallId: "spawn-1",
+            toolName: "subagent_spawn",
+            args: {
+              name: "Security review",
+              harness: "pi",
+              model: "openai/gpt-5",
+              reasoning_effort: "high",
+            },
+          },
+          {
+            type: "tool_execution_end",
+            toolCallId: "spawn-1",
+            toolName: "subagent_spawn",
+            result: {
+              content: [{ type: "text", text: "Spawned sa-1" }],
+              details: {
+                id: "sa-1",
+                title: "Security review",
+                harness: "pi",
+                model: "openai/gpt-5",
+              },
+            },
+            isError: false,
+          },
+          { type: "agent_settled" },
+          { type: "agent_start" },
+          {
+            type: "message_end",
+            message: {
+              role: "custom",
+              customType: "subagent-result",
+              content: "Subagent sa-1 finished.",
+              details: { id: "sa-1", title: "Security review", status: "done" },
+            },
+          },
+          {
+            type: "message_update",
+            assistantMessageEvent: { type: "text_delta", delta: "Review complete" },
+          },
+          { type: "agent_settled" },
+        ]);
+
+        const events = Array.from(yield* Fiber.join(collected));
+        const tasks = events.filter(
+          (
+            event,
+          ): event is Extract<
+            ProviderRuntimeEvent,
+            { type: "task.started" | "task.progress" | "task.completed" }
+          > =>
+            event.type === "task.started" ||
+            event.type === "task.progress" ||
+            event.type === "task.completed",
+        );
+        assert.deepEqual(
+          tasks.map((event) => event.type),
+          ["task.started", "task.progress", "task.completed"],
+        );
+        assert.equal(new Set(tasks.map((event) => event.payload.taskId)).size, 1);
+        const started = tasks.find((event) => event.type === "task.started");
+        const completed = tasks.find((event) => event.type === "task.completed");
+        assert.equal(started?.payload.title, "Security review");
+        assert.equal(started?.payload.role, "pi");
+        assert.equal(completed?.payload.status, "completed");
+        assert.equal(events.filter((event) => event.type === "turn.started").length, 2);
+        assert.equal(
+          events.some(
+            (event) => event.type === "content.delta" && event.payload.delta === "Review complete",
+          ),
+          true,
+        );
+      }),
+    );
+  });
+
+  it.effect("projects workflow agent progress into the Agents panel lifecycle", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        const stream = yield* collectThroughSentinel(adapter);
+        const turn = yield* adapter.sendTurn({
+          threadId: ThreadId.make("thread"),
+          input: "run workflow",
+          modelSelection,
+        });
+        stream.setSentinel(turn.turnId);
+        const runningDetails = {
+          runId: "wf-1",
+          name: "Audit",
+          phases: [{ title: "Scan" }],
+          agents: [
+            {
+              index: 0,
+              label: "Security scan",
+              phase: "Scan",
+              state: "running",
+              model: "openai/gpt-5",
+              startedAt: 100,
+              preview: "Checking auth",
+              usage: { input: 10, output: 2, cacheRead: 3 },
+            },
+          ],
+        };
+        yield* Queue.offerAll(h.client.input, [
+          {
+            type: "tool_execution_start",
+            toolCallId: "workflow-1",
+            toolName: "workflow",
+            args: { script: "return {}" },
+          },
+          {
+            type: "tool_execution_update",
+            toolCallId: "workflow-1",
+            toolName: "workflow",
+            partialResult: {
+              content: [{ type: "text", text: "running" }],
+              details: runningDetails,
+            },
+          },
+          {
+            type: "tool_execution_end",
+            toolCallId: "workflow-1",
+            toolName: "workflow",
+            result: {
+              content: [{ type: "text", text: "done" }],
+              details: {
+                ...runningDetails,
+                agents: [
+                  {
+                    ...runningDetails.agents[0],
+                    state: "done",
+                    finishedAt: 250,
+                    preview: "Auth checked",
+                    usage: { input: 20, output: 5, cacheRead: 4 },
+                  },
+                ],
+              },
+            },
+            isError: false,
+          },
+          { type: "agent_settled" },
+        ]);
+
+        const events = Array.from(yield* Fiber.join(stream.collected));
+        const tasks = events.filter(
+          (
+            event,
+          ): event is Extract<
+            ProviderRuntimeEvent,
+            { type: "task.started" | "task.progress" | "task.completed" }
+          > =>
+            event.type === "task.started" ||
+            event.type === "task.progress" ||
+            event.type === "task.completed",
+        );
+        assert.deepEqual(
+          tasks.map((event) => event.type),
+          ["task.started", "task.progress", "task.completed"],
+        );
+        const started = tasks.find((event) => event.type === "task.started");
+        const progress = tasks.find((event) => event.type === "task.progress");
+        const completed = tasks.find((event) => event.type === "task.completed");
+        assert.equal(started?.payload.workflowName, "Audit");
+        assert.equal(started?.payload.phaseTitle, "Scan");
+        assert.equal(progress?.payload.typedUsage?.totalTokens, 12);
+        assert.equal(completed?.payload.typedUsage?.durationMs, 150);
+        assert.equal(completed?.payload.status, "completed");
+      }),
+    );
+  });
+
   it.effect("keeps one T3 turn across native cycles and settles only at agent_settled", () => {
     const h = makeHarness();
     return withAdapter(h, (adapter) =>

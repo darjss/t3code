@@ -8,6 +8,7 @@ import {
   type ProviderUserInputAnswers,
   RuntimeItemId,
   RuntimeRequestId,
+  RuntimeTaskId,
   type ThreadId,
   TurnId,
   type UserInputQuestion,
@@ -96,6 +97,20 @@ interface PendingExtensionInput {
   readonly questionId: string;
 }
 
+interface PiAgentTask {
+  readonly taskId: RuntimeTaskId;
+  readonly toolUseId: string;
+  title: string;
+  role: string | undefined;
+  model: string | undefined;
+  effort: string | undefined;
+}
+
+interface PiWorkflowTask {
+  readonly taskId: RuntimeTaskId;
+  state: "running" | "done" | "error";
+}
+
 interface SessionContext {
   session: ProviderSession;
   readonly cursor: PiSessionCursor;
@@ -108,6 +123,9 @@ interface SessionContext {
   steeringGeneration: number;
   deferredSettlement: PiRpcEvent | undefined;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingExtensionInput>;
+  readonly agentTasksByToolCall: Map<string, PiAgentTask>;
+  readonly agentTasksById: Map<string, PiAgentTask>;
+  readonly workflowTasks: Map<string, PiWorkflowTask>;
   closing: boolean;
   stopped: boolean;
 }
@@ -421,6 +439,38 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
     }
   });
 
+  const beginTurn = Effect.fn("PiAdapter.beginTurn")(function* (
+    ctx: SessionContext,
+    payload: { readonly model?: string; readonly effort?: string } = {},
+  ) {
+    const turnId = TurnId.make(yield* uuid);
+    const turn: ActiveTurn = {
+      id: turnId,
+      assistantItemId: RuntimeItemId.make(`pi-assistant:${turnId}`),
+      reasoningItemId: RuntimeItemId.make(`pi-reasoning:${turnId}`),
+      toolItemIds: new Map(),
+      toolArgs: new Map(),
+      assistantText: "",
+      assistantStarted: false,
+      reasoningStarted: false,
+      interruptRequested: false,
+      terminal: false,
+    };
+    ctx.activeTurn = turn;
+    ctx.session = {
+      ...ctx.session,
+      status: "running",
+      activeTurnId: turnId,
+      updatedAt: yield* now,
+    };
+    yield* offer({
+      type: "turn.started",
+      ...(yield* base(ctx, turn)),
+      payload,
+    });
+    return turn;
+  });
+
   const publishTerminal = Effect.fn("PiAdapter.publishTerminal")(function* (
     ctx: SessionContext,
     expected: ActiveTurn,
@@ -526,6 +576,269 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
     return id;
   });
 
+  const agentTaskLinkage = (task: PiAgentTask) => ({
+    taskType: "subagent",
+    title: task.title,
+    ...(task.role ? { role: task.role } : {}),
+    ...(task.model ? { model: task.model } : {}),
+    ...(task.effort ? { effort: task.effort } : {}),
+    toolUseId: task.toolUseId,
+  });
+
+  const completeAgentTask = Effect.fn("PiAdapter.completeAgentTask")(function* (
+    ctx: SessionContext,
+    turn: ActiveTurn,
+    task: PiAgentTask,
+    status: "completed" | "failed" | "stopped",
+    summary: string | undefined,
+    native: PiRpcEvent,
+  ) {
+    yield* offer({
+      type: "task.completed",
+      ...(yield* base(ctx, turn)),
+      payload: {
+        taskId: task.taskId,
+        status,
+        ...(summary ? { summary } : {}),
+        ...agentTaskLinkage(task),
+      },
+      raw: raw(native),
+    });
+    for (const [id, candidate] of ctx.agentTasksById) {
+      if (candidate === task) ctx.agentTasksById.delete(id);
+    }
+    ctx.agentTasksByToolCall.delete(task.toolUseId);
+  });
+
+  const handleSubagentToolEvent = Effect.fn("PiAdapter.handleSubagentToolEvent")(function* (
+    ctx: SessionContext,
+    turn: ActiveTurn,
+    event: Record<string, unknown>,
+    native: PiRpcEvent,
+  ) {
+    const type = string(event.type);
+    const toolName = string(event.toolName)?.toLowerCase();
+    const toolUseId = string(event.toolCallId) ?? string(event.toolCallID);
+    if (toolName === "subagent_spawn" && type === "tool_execution_start" && toolUseId) {
+      const args = isRecord(event.args) ? event.args : {};
+      const title = trimmedString(args.name) ?? "Subagent";
+      const task: PiAgentTask = {
+        taskId: RuntimeTaskId.make(`pi-subagent:${toolUseId}`),
+        toolUseId,
+        title,
+        role: trimmedString(args.harness),
+        model: trimmedString(args.model),
+        effort: trimmedString(args.reasoning_effort),
+      };
+      ctx.agentTasksByToolCall.set(toolUseId, task);
+      yield* offer({
+        type: "task.started",
+        ...(yield* base(ctx, turn)),
+        payload: {
+          taskId: task.taskId,
+          description: title,
+          ...agentTaskLinkage(task),
+        },
+        raw: raw(native),
+      });
+      return;
+    }
+
+    const output = event.result ?? event.partialResult;
+    const outputRecord = isRecord(output) ? output : undefined;
+    const details = isRecord(outputRecord?.details) ? outputRecord.details : undefined;
+    if (toolName === "subagent_spawn" && type === "tool_execution_end" && toolUseId) {
+      const task = ctx.agentTasksByToolCall.get(toolUseId);
+      if (!task) return;
+      task.title = trimmedString(details?.title) ?? task.title;
+      task.role = trimmedString(details?.harness) ?? task.role;
+      task.model = trimmedString(details?.model) ?? task.model;
+      const id = trimmedString(details?.id);
+      if (id) ctx.agentTasksById.set(id, task);
+      const summary = piToolText(output)?.slice(0, 2_000);
+      if (event.isError === true) {
+        yield* completeAgentTask(ctx, turn, task, "failed", summary, native);
+      } else {
+        yield* offer({
+          type: "task.progress",
+          ...(yield* base(ctx, turn)),
+          payload: {
+            taskId: task.taskId,
+            description: task.title,
+            status: "running",
+            ...(summary ? { summary } : {}),
+            ...agentTaskLinkage(task),
+          },
+          raw: raw(native),
+        });
+      }
+      return;
+    }
+
+    if (type !== "tool_execution_end" || !details) return;
+    const rawResults = Array.isArray(details.results)
+      ? details.results
+      : details.id
+        ? [details]
+        : [];
+    for (const rawResult of rawResults) {
+      if (!isRecord(rawResult)) continue;
+      const id = trimmedString(rawResult.id);
+      const status = trimmedString(rawResult.status);
+      if (!id || (status !== "done" && status !== "error")) continue;
+      const task = ctx.agentTasksById.get(id);
+      if (!task) continue;
+      task.title = trimmedString(rawResult.title) ?? task.title;
+      yield* completeAgentTask(
+        ctx,
+        turn,
+        task,
+        status === "error" ? "failed" : "completed",
+        piToolText(output)?.slice(0, 2_000),
+        native,
+      );
+    }
+  });
+
+  const workflowDetails = (event: Record<string, unknown>) => {
+    const output = event.result ?? event.partialResult;
+    const outputRecord = isRecord(output) ? output : undefined;
+    return isRecord(outputRecord?.details) ? outputRecord.details : undefined;
+  };
+
+  const finiteNonNegative = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+
+  const handleWorkflowToolEvent = Effect.fn("PiAdapter.handleWorkflowToolEvent")(function* (
+    ctx: SessionContext,
+    turn: ActiveTurn,
+    event: Record<string, unknown>,
+    native: PiRpcEvent,
+  ) {
+    if (string(event.toolName)?.toLowerCase() !== "workflow") return;
+    const details = workflowDetails(event);
+    const runId = trimmedString(details?.runId);
+    if (!details || !runId || !Array.isArray(details.agents)) return;
+    const workflowName = trimmedString(details.name) ?? runId;
+    const phases = Array.isArray(details.phases)
+      ? details.phases.flatMap((phase, index) => {
+          if (!isRecord(phase)) return [];
+          const title = trimmedString(phase.title);
+          return title ? [{ index, title }] : [];
+        })
+      : [];
+    for (const rawAgent of details.agents) {
+      if (!isRecord(rawAgent)) continue;
+      const index = finiteNonNegative(rawAgent.index);
+      const label = trimmedString(rawAgent.label) ?? `Agent ${index + 1}`;
+      const state = rawAgent.state;
+      if (state !== "running" && state !== "done" && state !== "error") continue;
+      const key = `${runId}:${index}`;
+      let task = ctx.workflowTasks.get(key);
+      const taskId = task?.taskId ?? RuntimeTaskId.make(`pi-workflow:${key}`);
+      const phaseTitle = trimmedString(rawAgent.phase);
+      const phaseIndex = phaseTitle
+        ? phases.find((phase) => phase.title === phaseTitle)?.index
+        : undefined;
+      const model = trimmedString(rawAgent.model);
+      const usage = isRecord(rawAgent.usage) ? rawAgent.usage : {};
+      const inputTokens = finiteNonNegative(usage.input);
+      const outputTokens = finiteNonNegative(usage.output);
+      const cachedInputTokens = finiteNonNegative(usage.cacheRead);
+      const startedAt = finiteNonNegative(rawAgent.startedAt);
+      const finishedAt = finiteNonNegative(rawAgent.finishedAt);
+      const typedUsage = {
+        totalTokens: inputTokens + outputTokens,
+        inputTokens,
+        outputTokens,
+        cachedInputTokens,
+        ...(startedAt > 0 && finishedAt >= startedAt ? { durationMs: finishedAt - startedAt } : {}),
+      };
+      const linkage = {
+        taskType: "workflow-agent",
+        title: label,
+        role: "workflow agent",
+        ...(model ? { model } : {}),
+        workflowName,
+        agentIndex: index,
+        ...(phaseIndex !== undefined ? { phaseIndex } : {}),
+        ...(phaseTitle ? { phaseTitle } : {}),
+        ...(phases.length > 0 ? { phases } : {}),
+        runHandles: { runId },
+      } as const;
+      if (!task) {
+        task = { taskId, state: "running" };
+        ctx.workflowTasks.set(key, task);
+        yield* offer({
+          type: "task.started",
+          ...(yield* base(ctx, turn)),
+          payload: { taskId, description: label, ...linkage },
+          raw: raw(native),
+        });
+      }
+      if (task.state !== "running" && state === task.state) continue;
+      task.state = state;
+      const preview = trimmedString(rawAgent.preview);
+      if (state === "running") {
+        yield* offer({
+          type: "task.progress",
+          ...(yield* base(ctx, turn)),
+          payload: {
+            taskId,
+            description: label,
+            status: "running",
+            ...(preview ? { summary: preview } : {}),
+            typedUsage,
+            ...linkage,
+          },
+          raw: raw(native),
+        });
+      } else {
+        const error = trimmedString(rawAgent.error);
+        yield* offer({
+          type: "task.completed",
+          ...(yield* base(ctx, turn)),
+          payload: {
+            taskId,
+            status: state === "error" ? "failed" : "completed",
+            ...((error ?? preview) ? { summary: error ?? preview } : {}),
+            typedUsage,
+            ...linkage,
+          },
+          raw: raw(native),
+        });
+      }
+    }
+  });
+
+  const handleSubagentResultMessage = Effect.fn("PiAdapter.handleSubagentResultMessage")(function* (
+    ctx: SessionContext,
+    turn: ActiveTurn,
+    event: Record<string, unknown>,
+    native: PiRpcEvent,
+  ) {
+    const message = isRecord(event.message) ? event.message : undefined;
+    if (message?.role !== "custom" || message.customType !== "subagent-result") return false;
+    const details = isRecord(message.details) ? message.details : undefined;
+    const id = trimmedString(details?.id);
+    if (!id) return true;
+    const task = ctx.agentTasksById.get(id);
+    if (!task) return true;
+    task.title = trimmedString(details?.title) ?? task.title;
+    const content =
+      trimmedString(message.content) ??
+      (Array.isArray(message.content) ? piToolText({ content: message.content }) : undefined);
+    yield* completeAgentTask(
+      ctx,
+      turn,
+      task,
+      details?.status === "error" ? "failed" : "completed",
+      content?.slice(0, 2_000),
+      native,
+    );
+    return true;
+  });
+
   const handleEvent = Effect.fn("PiAdapter.handleEvent")(function* (
     ctx: SessionContext,
     native: PiRpcEvent,
@@ -541,7 +854,13 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
       yield* handleExtensionUiRequest(ctx, event);
       return;
     }
-    const turn = ctx.activeTurn;
+    let turn = ctx.activeTurn;
+    if (type === "agent_start") {
+      if (!turn || turn.terminal) {
+        turn = yield* beginTurn(ctx, ctx.session.model ? { model: ctx.session.model } : {});
+      }
+      return;
+    }
     if (!turn || turn.terminal) return;
     if (type === "message_update") {
       const update = isRecord(event.assistantMessageEvent)
@@ -588,6 +907,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
       }
       return;
     }
+    if (type === "message_end") {
+      yield* handleSubagentResultMessage(ctx, turn, event, native);
+      return;
+    }
     if (type?.startsWith("tool_execution_")) {
       const lifecycle =
         type === "tool_execution_start"
@@ -604,6 +927,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
           ? event
           : { ...event, args: turn.toolArgs.get(toolKey) };
       const isError = event.isError === true;
+      yield* handleSubagentToolEvent(ctx, turn, presentationEvent, native);
+      yield* handleWorkflowToolEvent(ctx, turn, presentationEvent, native);
       yield* offer({
         type: lifecycle,
         ...(yield* base(ctx, turn)),
@@ -866,6 +1191,9 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
             steeringGeneration: 0,
             deferredSettlement: undefined,
             pendingUserInputs: new Map(),
+            agentTasksByToolCall: new Map(),
+            agentTasksById: new Map(),
+            workflowTasks: new Map(),
             closing: false,
             stopped: false,
           };
@@ -996,32 +1324,12 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
             provider: PROVIDER,
             threadId: input.threadId,
           });
-        const turnId = TurnId.make(yield* uuid);
-        const turn: ActiveTurn = {
-          id: turnId,
-          assistantItemId: RuntimeItemId.make(`pi-assistant:${turnId}`),
-          reasoningItemId: RuntimeItemId.make(`pi-reasoning:${turnId}`),
-          toolItemIds: new Map(),
-          toolArgs: new Map(),
-          assistantText: "",
-          assistantStarted: false,
-          reasoningStarted: false,
-          interruptRequested: false,
-          terminal: false,
-        };
-        createdTurn = turn;
-        ctx.activeTurn = turn;
-        ctx.session = {
-          ...ctx.session,
-          status: "running",
-          activeTurnId: turnId,
-          updatedAt: yield* now,
-        };
-        yield* offer({
-          type: "turn.started",
-          ...(yield* base(ctx, turn)),
-          payload: { model: selection!.model, ...(thinking ? { effort: thinking } : {}) },
+        const turn = yield* beginTurn(ctx, {
+          model: selection!.model,
+          ...(thinking ? { effort: thinking } : {}),
         });
+        createdTurn = turn;
+        const turnId = turn.id;
         const prompted = yield* ctx.client.prompt(input.input ?? "", images).pipe(Effect.result);
         if (Result.isFailure(prompted)) {
           const reusable = isPiRpcCommandError(prompted.failure);
