@@ -16,10 +16,12 @@ const settings = Schema.decodeSync(PiSettings)({ binaryPath: "fake-pi" });
 
 const unusedClientMethods = {
   events: Stream.empty,
+  getCommands: () => Effect.succeed({ commands: [] }),
   setModel: () => Effect.die("unused"),
   setThinkingLevel: () => Effect.die("unused"),
   prompt: () => Effect.die("unused"),
   abort: () => Effect.die("unused"),
+  respondToExtensionUi: () => Effect.die("unused"),
   close: () => Effect.void,
 } satisfies Omit<PiRpcClient, "getAvailableModels" | "getState">;
 
@@ -37,6 +39,33 @@ it.effect("maps Pi RPC inventory into selectable models", () =>
           Effect.succeed({
             models: [
               { provider: "openai compatible", id: "gpt/5", name: " GPT Five ", reasoning: true },
+            ],
+          }),
+        getCommands: () =>
+          Effect.succeed({
+            commands: [
+              {
+                name: "subagents",
+                description: "List subagents",
+                source: "extension" as const,
+                sourceInfo: {
+                  path: "/home/test/.pi/extensions/subagents.ts",
+                  source: "auto",
+                  scope: "user",
+                  origin: "top-level",
+                },
+              },
+              {
+                name: "skill:review",
+                description: "Review changes",
+                source: "skill" as const,
+                sourceInfo: {
+                  path: "/home/test/.pi/skills/review/SKILL.md",
+                  source: "auto",
+                  scope: "user",
+                  origin: "top-level",
+                },
+              },
             ],
           }),
       } satisfies PiRpcClient).pipe(
@@ -64,6 +93,20 @@ it.effect("maps Pi RPC inventory into selectable models", () =>
     assert.equal(snapshot.models[0]?.isDefault, true);
     assert.equal(snapshot.models[0]?.capabilities?.optionDescriptors?.[0]?.id, "thinkingLevel");
     assert.equal(snapshot.models[0]?.capabilities?.optionDescriptors?.[0]?.currentValue, "medium");
+    assert.deepEqual(snapshot.slashCommands, [
+      { name: "subagents", description: "List subagents" },
+      { name: "skill:review", description: "Review changes" },
+    ]);
+    assert.deepEqual(snapshot.skills, [
+      {
+        name: "review",
+        description: "Review changes",
+        shortDescription: "Review changes",
+        path: "/home/test/.pi/skills/review/SKILL.md",
+        scope: "user",
+        enabled: true,
+      },
+    ]);
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 

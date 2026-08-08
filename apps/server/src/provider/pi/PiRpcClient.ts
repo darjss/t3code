@@ -13,6 +13,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   isPiRpcResponse,
   PiRpcAvailableModels,
+  PiRpcCommands,
   type PiRpcEvent,
   PiRpcModel,
   type PiRpcRawEvent,
@@ -59,10 +60,16 @@ export interface PiRpcImage {
   readonly mimeType: string;
 }
 
+export type PiExtensionUiResponse =
+  | { readonly id: string; readonly value: string }
+  | { readonly id: string; readonly confirmed: boolean }
+  | { readonly id: string; readonly cancelled: true };
+
 export interface PiRpcClient {
   readonly events: Stream.Stream<PiRpcEvent>;
   readonly getState: () => Effect.Effect<PiRpcState, PiRpcError>;
   readonly getAvailableModels: () => Effect.Effect<PiRpcAvailableModels, PiRpcError>;
+  readonly getCommands: () => Effect.Effect<PiRpcCommands, PiRpcError>;
   readonly setModel: (provider: string, modelId: string) => Effect.Effect<PiRpcModel, PiRpcError>;
   readonly setThinkingLevel: (level: PiThinkingLevel) => Effect.Effect<void, PiRpcError>;
   readonly prompt: (
@@ -71,6 +78,9 @@ export interface PiRpcClient {
     streamingBehavior?: "steer" | "followUp",
   ) => Effect.Effect<void, PiRpcError>;
   readonly abort: () => Effect.Effect<void, PiRpcError>;
+  readonly respondToExtensionUi: (
+    response: PiExtensionUiResponse,
+  ) => Effect.Effect<void, PiRpcError>;
   readonly close: () => Effect.Effect<void>;
 }
 
@@ -108,6 +118,12 @@ export const makePiRpcTransport = Effect.fn("PiRpcClient.makeTransport")(functio
       Effect.mapError(
         (cause) =>
           new PiRpcProtocolError({ detail: "invalid get_available_models response data", cause }),
+      ),
+    );
+  const decodeCommands = (data: unknown) =>
+    Schema.decodeUnknownEffect(PiRpcCommands)(data).pipe(
+      Effect.mapError(
+        (cause) => new PiRpcProtocolError({ detail: "invalid get_commands response data", cause }),
       ),
     );
   const decodeModel = (data: unknown) =>
@@ -274,6 +290,7 @@ export const makePiRpcTransport = Effect.fn("PiRpcClient.makeTransport")(functio
     events: Stream.fromQueue(events),
     getState: () => request("get_state", {}, decodeState),
     getAvailableModels: () => request("get_available_models", {}, decodeModels),
+    getCommands: () => request("get_commands", {}, decodeCommands),
     setModel: (provider, modelId) => request("set_model", { provider, modelId }, decodeModel),
     setThinkingLevel: (level) => request("set_thinking_level", { level }, () => Effect.void),
     prompt: (message, images, streamingBehavior) =>
@@ -287,6 +304,7 @@ export const makePiRpcTransport = Effect.fn("PiRpcClient.makeTransport")(functio
         () => Effect.void,
       ),
     abort: () => request("abort", {}, () => Effect.void),
+    respondToExtensionUi: (response) => write({ type: "extension_ui_response", ...response }),
     close: () => close,
   };
 });

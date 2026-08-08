@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  ApprovalRequestId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
@@ -56,6 +57,7 @@ class FakeClient implements PiRpcClient {
       streamingBehavior?: "steer" | "followUp";
     }>,
     thinking: [] as PiThinkingLevel[],
+    extensionUiResponses: [] as Array<Record<string, unknown>>,
   };
   state: { sessionFile?: string; sessionId?: string; isStreaming?: boolean } = {};
   getStateResults: Array<typeof this.state> = [];
@@ -88,6 +90,7 @@ class FakeClient implements PiRpcClient {
       return { models: [{ provider: "openai", id: "gpt-5", reasoning: true }] };
     });
   };
+  getCommands = () => Effect.succeed({ commands: [] });
   setModel = (provider: string, id: string) => Effect.succeed({ provider, id });
   setThinkingLevel = (level: PiThinkingLevel) =>
     Effect.sync(() => {
@@ -125,6 +128,10 @@ class FakeClient implements PiRpcClient {
       if (self.abortBeforeSettle) yield* Queue.offer(self.input, { type: "agent_settled" });
     });
   };
+  respondToExtensionUi = (response: Record<string, unknown>) =>
+    Effect.sync(() => {
+      this.calls.extensionUiResponses.push(response);
+    });
   close = () => {
     const self = this;
     return Effect.gen(function* () {
@@ -291,6 +298,84 @@ describe("PiAdapter", () => {
             ],
           },
         ]);
+        yield* Queue.offer(h.client.input, { type: "agent_settled" });
+      }),
+    );
+  });
+
+  it.effect("settles extension slash commands that do not start an agent", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        const collected = yield* Stream.take(adapter.streamEvents, 2).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        const turn = yield* adapter.sendTurn({
+          threadId: ThreadId.make("thread"),
+          input: "/workflows",
+          modelSelection,
+        });
+        const events = Array.from(yield* Fiber.join(collected));
+        assert.deepEqual(
+          events.map((event) => event.type),
+          ["turn.started", "turn.completed"],
+        );
+        assert.equal(events[1]?.turnId, turn.turnId);
+      }),
+    );
+  });
+
+  it.effect("answers extension UI requests while prompt preflight is waiting", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        h.client.promptEntered = yield* Deferred.make<void>();
+        h.client.promptGate = yield* Deferred.make<void>();
+        const requestedFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event): event is Extract<ProviderRuntimeEvent, { type: "user-input.requested" }> =>
+              event.type === "user-input.requested",
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        const sendFiber = yield* adapter
+          .sendTurn({
+            threadId: ThreadId.make("thread"),
+            input: "ask first",
+            modelSelection,
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(h.client.promptEntered);
+        yield* Queue.offer(h.client.input, {
+          type: "extension_ui_request",
+          id: "confirm-1",
+          method: "confirm",
+          title: "Approve command",
+          message: "Run the command?",
+        });
+        const requested = yield* Fiber.join(requestedFiber);
+        assert.equal(Option.isSome(requested), true);
+        if (Option.isNone(requested)) return;
+        const question = requested.value.payload.questions[0];
+        assert.equal(question?.question, "Run the command?");
+        assert.deepEqual(
+          question?.options.map((option) => option.label),
+          ["Yes", "No"],
+        );
+        yield* adapter.respondToUserInput(
+          ThreadId.make("thread"),
+          ApprovalRequestId.make(String(requested.value.requestId)),
+          { [question!.id]: "Yes" },
+        );
+        assert.deepEqual(h.client.calls.extensionUiResponses, [
+          { id: "confirm-1", confirmed: true },
+        ]);
+        yield* Deferred.succeed(h.client.promptGate, undefined);
+        yield* Fiber.join(sendFiber);
         yield* Queue.offer(h.client.input, { type: "agent_settled" });
       }),
     );
@@ -481,6 +566,220 @@ describe("PiAdapter", () => {
             "security_scout",
           );
         }
+      }),
+    );
+  });
+
+  it.effect("projects background subagents into task lifecycle events and a follow-up turn", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        let completedTurns = 0;
+        const collected = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => {
+            if (event.type !== "turn.completed") return false;
+            completedTurns += 1;
+            return completedTurns === 2;
+          }),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* adapter.sendTurn({
+          threadId: ThreadId.make("thread"),
+          input: "delegate this",
+          modelSelection,
+        });
+        yield* Queue.offerAll(h.client.input, [
+          {
+            type: "tool_execution_start",
+            toolCallId: "spawn-1",
+            toolName: "subagent_spawn",
+            args: {
+              name: "Security review",
+              harness: "pi",
+              model: "openai/gpt-5",
+              reasoning_effort: "high",
+            },
+          },
+          {
+            type: "tool_execution_end",
+            toolCallId: "spawn-1",
+            toolName: "subagent_spawn",
+            result: {
+              content: [{ type: "text", text: "Spawned sa-1" }],
+              details: {
+                id: "sa-1",
+                title: "Security review",
+                harness: "pi",
+                model: "openai/gpt-5",
+              },
+            },
+            isError: false,
+          },
+          { type: "agent_settled" },
+          { type: "agent_start" },
+          {
+            type: "message_end",
+            message: {
+              role: "custom",
+              customType: "subagent-result",
+              content: "Subagent sa-1 finished.",
+              details: { id: "sa-1", title: "Security review", status: "done" },
+            },
+          },
+          {
+            type: "message_update",
+            assistantMessageEvent: { type: "text_delta", delta: "Review complete" },
+          },
+          { type: "agent_settled" },
+        ]);
+
+        const events = Array.from(yield* Fiber.join(collected));
+        const tasks = events.filter(
+          (
+            event,
+          ): event is Extract<
+            ProviderRuntimeEvent,
+            { type: "task.started" | "task.progress" | "task.completed" }
+          > =>
+            event.type === "task.started" ||
+            event.type === "task.progress" ||
+            event.type === "task.completed",
+        );
+        assert.deepEqual(
+          tasks.map((event) => event.type),
+          ["task.started", "task.progress", "task.completed"],
+        );
+        assert.equal(new Set(tasks.map((event) => event.payload.taskId)).size, 1);
+        const started = tasks.find((event) => event.type === "task.started");
+        const completed = tasks.find((event) => event.type === "task.completed");
+        assert.equal(started?.payload.title, "Security review");
+        assert.equal(started?.payload.role, "pi");
+        assert.equal(completed?.payload.status, "completed");
+        assert.equal(events.filter((event) => event.type === "turn.started").length, 2);
+        assert.equal(
+          events.some(
+            (event) => event.type === "content.delta" && event.payload.delta === "Review complete",
+          ),
+          true,
+        );
+      }),
+    );
+  });
+
+  it.effect("projects workflow agent progress into the Agents panel lifecycle", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        const stream = yield* collectThroughSentinel(adapter);
+        const turn = yield* adapter.sendTurn({
+          threadId: ThreadId.make("thread"),
+          input: "run workflow",
+          modelSelection,
+        });
+        stream.setSentinel(turn.turnId);
+        const runningDetails = {
+          runId: "wf-1",
+          name: "Audit",
+          phases: [{ title: "Scan" }],
+          agents: [
+            {
+              index: 0,
+              label: "Security scan",
+              phase: "Scan",
+              state: "running",
+              model: "openai/gpt-5",
+              startedAt: 100,
+              preview: "Checking auth",
+              usage: { input: 10, output: 2, cacheRead: 3 },
+            },
+          ],
+        };
+        yield* Queue.offerAll(h.client.input, [
+          {
+            type: "tool_execution_start",
+            toolCallId: "workflow-1",
+            toolName: "workflow",
+            args: { script: "return {}" },
+          },
+          {
+            type: "tool_execution_update",
+            toolCallId: "workflow-1",
+            toolName: "workflow",
+            partialResult: {
+              content: [{ type: "text", text: "starting" }],
+              details: { ...runningDetails, agents: [] },
+            },
+          },
+          {
+            type: "tool_execution_update",
+            toolCallId: "workflow-1",
+            toolName: "workflow",
+            partialResult: {
+              content: [{ type: "text", text: "running" }],
+              details: runningDetails,
+            },
+          },
+          {
+            type: "tool_execution_end",
+            toolCallId: "workflow-1",
+            toolName: "workflow",
+            result: {
+              content: [{ type: "text", text: "done" }],
+              details: {
+                ...runningDetails,
+                agents: [
+                  {
+                    ...runningDetails.agents[0],
+                    state: "done",
+                    finishedAt: 250,
+                    preview: "Auth checked",
+                    usage: { input: 20, output: 5, cacheRead: 4 },
+                  },
+                ],
+              },
+            },
+            isError: false,
+          },
+          { type: "agent_settled" },
+        ]);
+
+        const events = Array.from(yield* Fiber.join(stream.collected));
+        const tasks = events.filter(
+          (
+            event,
+          ): event is Extract<
+            ProviderRuntimeEvent,
+            { type: "task.started" | "task.progress" | "task.completed" }
+          > =>
+            event.type === "task.started" ||
+            event.type === "task.progress" ||
+            event.type === "task.completed",
+        );
+        assert.deepEqual(
+          tasks.map((event) => event.type),
+          ["task.started", "task.started", "task.progress", "task.completed", "task.completed"],
+        );
+        const coordinator = tasks.find(
+          (event) => event.type === "task.started" && event.payload.taskType === "local_workflow",
+        );
+        const started = tasks.find(
+          (event) => event.type === "task.started" && event.payload.taskType === "workflow-agent",
+        );
+        const progress = tasks.find((event) => event.type === "task.progress");
+        const completed = tasks.find(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "task.completed" }> =>
+            event.type === "task.completed" && event.payload.taskType === "workflow-agent",
+        );
+        assert.equal(coordinator?.payload.title, "Audit");
+        assert.equal(started?.payload.parentAgentId, coordinator?.payload.taskId);
+        assert.equal(started?.payload.workflowName, "Audit");
+        assert.equal(started?.payload.phaseTitle, "Scan");
+        assert.equal(progress?.payload.typedUsage?.totalTokens, 12);
+        assert.equal(completed?.payload.typedUsage?.durationMs, 150);
+        assert.equal(completed?.payload.status, "completed");
       }),
     );
   });
