@@ -178,6 +178,17 @@ describe("PiRpcClient transport", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("sends extension UI responses without waiting for an acknowledgement", () =>
+    Effect.gen(function* () {
+      const test = yield* makeIo();
+      const client = yield* makePiRpcTransport(test.io);
+      yield* client.respondToExtensionUi({ id: "ui-1", confirmed: true });
+      expect(yield* Queue.take(test.writes)).toBe(
+        '{"type":"extension_ui_response","id":"ui-1","confirmed":true}\n',
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("writes sequential and concurrent requests as complete NDJSON lines", () =>
     Effect.gen(function* () {
       const test = yield* makeIo();

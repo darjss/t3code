@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  ApprovalRequestId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
@@ -56,6 +57,7 @@ class FakeClient implements PiRpcClient {
       streamingBehavior?: "steer" | "followUp";
     }>,
     thinking: [] as PiThinkingLevel[],
+    extensionUiResponses: [] as Array<Record<string, unknown>>,
   };
   state: { sessionFile?: string; sessionId?: string; isStreaming?: boolean } = {};
   getStateResults: Array<typeof this.state> = [];
@@ -126,6 +128,10 @@ class FakeClient implements PiRpcClient {
       if (self.abortBeforeSettle) yield* Queue.offer(self.input, { type: "agent_settled" });
     });
   };
+  respondToExtensionUi = (response: Record<string, unknown>) =>
+    Effect.sync(() => {
+      this.calls.extensionUiResponses.push(response);
+    });
   close = () => {
     const self = this;
     return Effect.gen(function* () {
@@ -292,6 +298,60 @@ describe("PiAdapter", () => {
             ],
           },
         ]);
+        yield* Queue.offer(h.client.input, { type: "agent_settled" });
+      }),
+    );
+  });
+
+  it.effect("answers extension UI requests while prompt preflight is waiting", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        h.client.promptEntered = yield* Deferred.make<void>();
+        h.client.promptGate = yield* Deferred.make<void>();
+        const requestedFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event): event is Extract<ProviderRuntimeEvent, { type: "user-input.requested" }> =>
+              event.type === "user-input.requested",
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        const sendFiber = yield* adapter
+          .sendTurn({
+            threadId: ThreadId.make("thread"),
+            input: "ask first",
+            modelSelection,
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(h.client.promptEntered);
+        yield* Queue.offer(h.client.input, {
+          type: "extension_ui_request",
+          id: "confirm-1",
+          method: "confirm",
+          title: "Approve command",
+          message: "Run the command?",
+        });
+        const requested = yield* Fiber.join(requestedFiber);
+        assert.equal(Option.isSome(requested), true);
+        if (Option.isNone(requested)) return;
+        const question = requested.value.payload.questions[0];
+        assert.equal(question?.question, "Run the command?");
+        assert.deepEqual(
+          question?.options.map((option) => option.label),
+          ["Yes", "No"],
+        );
+        yield* adapter.respondToUserInput(
+          ThreadId.make("thread"),
+          ApprovalRequestId.make(String(requested.value.requestId)),
+          { [question!.id]: "Yes" },
+        );
+        assert.deepEqual(h.client.calls.extensionUiResponses, [
+          { id: "confirm-1", confirmed: true },
+        ]);
+        yield* Deferred.succeed(h.client.promptGate, undefined);
+        yield* Fiber.join(sendFiber);
         yield* Queue.offer(h.client.input, { type: "agent_settled" });
       }),
     );

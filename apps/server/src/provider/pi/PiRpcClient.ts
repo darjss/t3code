@@ -60,6 +60,11 @@ export interface PiRpcImage {
   readonly mimeType: string;
 }
 
+export type PiExtensionUiResponse =
+  | { readonly id: string; readonly value: string }
+  | { readonly id: string; readonly confirmed: boolean }
+  | { readonly id: string; readonly cancelled: true };
+
 export interface PiRpcClient {
   readonly events: Stream.Stream<PiRpcEvent>;
   readonly getState: () => Effect.Effect<PiRpcState, PiRpcError>;
@@ -73,6 +78,9 @@ export interface PiRpcClient {
     streamingBehavior?: "steer" | "followUp",
   ) => Effect.Effect<void, PiRpcError>;
   readonly abort: () => Effect.Effect<void, PiRpcError>;
+  readonly respondToExtensionUi: (
+    response: PiExtensionUiResponse,
+  ) => Effect.Effect<void, PiRpcError>;
   readonly close: () => Effect.Effect<void>;
 }
 
@@ -296,6 +304,7 @@ export const makePiRpcTransport = Effect.fn("PiRpcClient.makeTransport")(functio
         () => Effect.void,
       ),
     abort: () => request("abort", {}, () => Effect.void),
+    respondToExtensionUi: (response) => write({ type: "extension_ui_response", ...response }),
     close: () => close,
   };
 });

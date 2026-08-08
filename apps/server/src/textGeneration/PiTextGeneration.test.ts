@@ -70,6 +70,7 @@ class FakeClient implements PiRpcClient {
         });
   };
   abort = () => Effect.void;
+  respondToExtensionUi = () => Effect.void;
   close = () =>
     Effect.sync(() => {
       this.closeCalls += 1;

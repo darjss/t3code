@@ -1,16 +1,21 @@
 import {
+  ApprovalRequestId,
   EventId,
   ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type ProviderUserInputAnswers,
   RuntimeItemId,
+  RuntimeRequestId,
   type ThreadId,
   TurnId,
+  type UserInputQuestion,
 } from "@t3tools/contracts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -83,6 +88,14 @@ interface ActiveTurn {
   terminal: boolean;
 }
 
+type PiInteractiveExtensionMethod = "select" | "confirm" | "input" | "editor";
+
+interface PendingExtensionInput {
+  readonly extensionRequestId: string;
+  readonly method: PiInteractiveExtensionMethod;
+  readonly questionId: string;
+}
+
 interface SessionContext {
   session: ProviderSession;
   readonly cursor: PiSessionCursor;
@@ -94,6 +107,7 @@ interface SessionContext {
   steeringPromptsInFlight: number;
   steeringGeneration: number;
   deferredSettlement: PiRpcEvent | undefined;
+  readonly pendingUserInputs: Map<ApprovalRequestId, PendingExtensionInput>;
   closing: boolean;
   stopped: boolean;
 }
@@ -295,6 +309,118 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
     payload: event,
   });
 
+  const resolveExtensionInput = Effect.fn("PiAdapter.resolveExtensionInput")(function* (
+    ctx: SessionContext,
+    requestId: ApprovalRequestId,
+    pending: PendingExtensionInput,
+    answers: ProviderUserInputAnswers,
+    response:
+      | { readonly value: string }
+      | { readonly confirmed: boolean }
+      | { readonly cancelled: true },
+  ) {
+    if (ctx.pendingUserInputs.get(requestId) !== pending) return false;
+    ctx.pendingUserInputs.delete(requestId);
+    yield* offer({
+      type: "user-input.resolved",
+      ...(yield* base(ctx, ctx.activeTurn)),
+      requestId: RuntimeRequestId.make(requestId),
+      payload: { answers },
+      raw: {
+        source: "pi.rpc.notification",
+        method: "extension_ui_response",
+        payload: { id: pending.extensionRequestId, ...response },
+      },
+    });
+    yield* ctx.client
+      .respondToExtensionUi({ id: pending.extensionRequestId, ...response })
+      .pipe(Effect.mapError((cause) => request("extension_ui_response", cause)));
+    return true;
+  });
+
+  const extensionQuestion = (
+    requestId: ApprovalRequestId,
+    event: Record<string, unknown>,
+    method: PiInteractiveExtensionMethod,
+  ): UserInputQuestion => {
+    const title = trimmedString(event.title) ?? "Pi extension";
+    const question =
+      method === "confirm"
+        ? (trimmedString(event.message) ?? title)
+        : method === "input"
+          ? (trimmedString(event.placeholder) ?? title)
+          : title;
+    const options =
+      method === "confirm"
+        ? [
+            { label: "Yes", description: "Yes" },
+            { label: "No", description: "No" },
+          ]
+        : method === "select" && Array.isArray(event.options)
+          ? event.options.flatMap((option) => {
+              const label = trimmedString(option);
+              return label ? [{ label, description: label }] : [];
+            })
+          : [];
+    return {
+      id: `${requestId}:answer`,
+      header: title,
+      question,
+      options,
+      multiSelect: false,
+    };
+  };
+
+  const handleExtensionUiRequest = Effect.fn("PiAdapter.handleExtensionUiRequest")(function* (
+    ctx: SessionContext,
+    event: Record<string, unknown>,
+  ) {
+    const method = string(event.method);
+    if (method === "notify") {
+      const message = trimmedString(event.message);
+      if (message) {
+        yield* offer({
+          type: "runtime.warning",
+          ...(yield* base(ctx, ctx.activeTurn)),
+          payload: { message },
+          raw: raw(event),
+        });
+      }
+      return;
+    }
+    if (method !== "select" && method !== "confirm" && method !== "input" && method !== "editor") {
+      return;
+    }
+    const extensionRequestId = string(event.id);
+    if (!extensionRequestId) return;
+    const requestId = ApprovalRequestId.make(`pi-extension:${extensionRequestId}`);
+    const question = extensionQuestion(requestId, event, method);
+    const pending = {
+      extensionRequestId,
+      method,
+      questionId: question.id,
+    } satisfies PendingExtensionInput;
+    ctx.pendingUserInputs.set(requestId, pending);
+    yield* offer({
+      type: "user-input.requested",
+      ...(yield* base(ctx, ctx.activeTurn)),
+      requestId: RuntimeRequestId.make(requestId),
+      payload: { questions: [question] },
+      raw: raw(event),
+    });
+    const timeoutMs =
+      typeof event.timeout === "number" && Number.isFinite(event.timeout) && event.timeout > 0
+        ? event.timeout
+        : undefined;
+    if (timeoutMs !== undefined) {
+      yield* Effect.sleep(Duration.millis(timeoutMs)).pipe(
+        Effect.andThen(resolveExtensionInput(ctx, requestId, pending, {}, { cancelled: true })),
+        Effect.catch(() => Effect.void),
+        Effect.forkIn(ctx.scope),
+      );
+    }
+  });
+
   const publishTerminal = Effect.fn("PiAdapter.publishTerminal")(function* (
     ctx: SessionContext,
     expected: ActiveTurn,
@@ -326,6 +452,14 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
       Effect.gen(function* () {
         if (ctx.stopped || ctx.closing) return;
         ctx.closing = true;
+        yield* Effect.forEach(
+          [...ctx.pendingUserInputs],
+          ([requestId, pending]) =>
+            resolveExtensionInput(ctx, requestId, pending, {}, { cancelled: true }).pipe(
+              Effect.ignore,
+            ),
+          { discard: true },
+        );
         const turn = ctx.activeTurn;
         if (turn && !turn.terminal) {
           const completedEvent = {
@@ -403,6 +537,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
     }
     const event = native as Record<string, unknown>;
     const type = string(event.type);
+    if (type === "extension_ui_request") {
+      yield* handleExtensionUiRequest(ctx, event);
+      return;
+    }
     const turn = ctx.activeTurn;
     if (!turn || turn.terminal) return;
     if (type === "message_update") {
@@ -727,6 +865,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
             steeringPromptsInFlight: 0,
             steeringGeneration: 0,
             deferredSettlement: undefined,
+            pendingUserInputs: new Map(),
             closing: false,
             stopped: false,
           };
@@ -927,6 +1066,30 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
     requireSession(threadId).pipe(
       Effect.andThen(validation(operation, `Pi does not support ${operation}.`)),
     );
+  const respondToUserInput: ProviderAdapterShape<ProviderAdapterError>["respondToUserInput"] = (
+    threadId,
+    requestId,
+    answers,
+  ) =>
+    Effect.gen(function* () {
+      // Prompt preflight can wait on extension UI while sendTurn owns the
+      // thread lock, so responses must use Pi's own serialized RPC writer.
+      const ctx = yield* requireSession(threadId);
+      const pending = ctx.pendingUserInputs.get(requestId);
+      if (!pending) return yield* request("extension_ui_response", "Unknown Pi input request.");
+      const rawAnswer = answers[pending.questionId];
+      const answer = (Array.isArray(rawAnswer) ? rawAnswer[0] : rawAnswer)?.trim();
+      if (!answer) return yield* validation("respondToUserInput", "Pi requires an answer.");
+      const response =
+        pending.method === "confirm"
+          ? {
+              confirmed: ["yes", "true", "confirm", "confirmed"].includes(answer.toLowerCase()),
+            }
+          : { value: answer };
+      const resolved = yield* resolveExtensionInput(ctx, requestId, pending, answers, response);
+      if (!resolved)
+        return yield* request("extension_ui_response", "Pi input request already resolved.");
+    });
   const stopSession = (threadId: ThreadId) =>
     withThreadLock(threadId, sessions.has(threadId) ? close(sessions.get(threadId)!) : Effect.void);
   const stopAll = () =>
@@ -940,7 +1103,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
     sendTurn,
     interruptTurn,
     respondToRequest: (threadId) => unsupported("respondToRequest", threadId),
-    respondToUserInput: (threadId) => unsupported("respondToUserInput", threadId),
+    respondToUserInput,
     readThread: (threadId) => unsupported("readThread", threadId),
     rollbackThread: (threadId) => unsupported("rollbackThread", threadId),
     stopSession,
