@@ -17,6 +17,7 @@ const settings = Schema.decodeSync(PiSettings)({ binaryPath: "fake-pi" });
 const unusedClientMethods = {
   events: Stream.empty,
   getCommands: () => Effect.succeed({ commands: [] }),
+  getSessionStats: () => Effect.die("unused"),
   setModel: () => Effect.die("unused"),
   setThinkingLevel: () => Effect.die("unused"),
   prompt: () => Effect.die("unused"),

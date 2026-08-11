@@ -18,6 +18,7 @@ import {
   PiRpcModel,
   type PiRpcRawEvent,
   type PiRpcResponse,
+  PiRpcSessionStats,
   PiRpcState,
   type PiThinkingLevel,
 } from "./PiRpcSchema.ts";
@@ -68,6 +69,7 @@ export type PiExtensionUiResponse =
 export interface PiRpcClient {
   readonly events: Stream.Stream<PiRpcEvent>;
   readonly getState: () => Effect.Effect<PiRpcState, PiRpcError>;
+  readonly getSessionStats: () => Effect.Effect<PiRpcSessionStats, PiRpcError>;
   readonly getAvailableModels: () => Effect.Effect<PiRpcAvailableModels, PiRpcError>;
   readonly getCommands: () => Effect.Effect<PiRpcCommands, PiRpcError>;
   readonly setModel: (provider: string, modelId: string) => Effect.Effect<PiRpcModel, PiRpcError>;
@@ -130,6 +132,13 @@ export const makePiRpcTransport = Effect.fn("PiRpcClient.makeTransport")(functio
     Schema.decodeUnknownEffect(PiRpcModel)(data).pipe(
       Effect.mapError(
         (cause) => new PiRpcProtocolError({ detail: "invalid set_model response data", cause }),
+      ),
+    );
+  const decodeSessionStats = (data: unknown) =>
+    Schema.decodeUnknownEffect(PiRpcSessionStats)(data).pipe(
+      Effect.mapError(
+        (cause) =>
+          new PiRpcProtocolError({ detail: "invalid get_session_stats response data", cause }),
       ),
     );
 
@@ -289,6 +298,7 @@ export const makePiRpcTransport = Effect.fn("PiRpcClient.makeTransport")(functio
   return {
     events: Stream.fromQueue(events),
     getState: () => request("get_state", {}, decodeState),
+    getSessionStats: () => request("get_session_stats", {}, decodeSessionStats),
     getAvailableModels: () => request("get_available_models", {}, decodeModels),
     getCommands: () => request("get_commands", {}, decodeCommands),
     setModel: (provider, modelId) => request("set_model", { provider, modelId }, decodeModel),

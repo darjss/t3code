@@ -29,7 +29,7 @@ import {
   PiRpcProtocolError,
   type PiRpcSpawnOptions,
 } from "../pi/PiRpcClient.ts";
-import type { PiRpcEvent, PiThinkingLevel } from "../pi/PiRpcSchema.ts";
+import type { PiRpcEvent, PiRpcSessionStats, PiThinkingLevel } from "../pi/PiRpcSchema.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import type { ProviderAdapterError } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
@@ -59,10 +59,12 @@ class FakeClient implements PiRpcClient {
       streamingBehavior?: "steer" | "followUp";
     }>,
     thinking: [] as PiThinkingLevel[],
+    sessionStats: 0,
     extensionUiResponses: [] as Array<Record<string, unknown>>,
   };
   state: { sessionFile?: string; sessionId?: string; isStreaming?: boolean } = {};
   getStateResults: Array<typeof this.state> = [];
+  sessionStats: PiRpcSessionStats = {};
   failPrompt = false;
   fatalPrompt = false;
   abortBeforeSettle = false;
@@ -83,6 +85,11 @@ class FakeClient implements PiRpcClient {
       return self.getStateResults.shift() ?? self.state;
     });
   };
+  getSessionStats = () =>
+    Effect.sync(() => {
+      this.calls.sessionStats += 1;
+      return this.sessionStats;
+    });
   getAvailableModels = () => {
     const self = this;
     return Effect.gen(function* () {
@@ -1210,6 +1217,46 @@ describe("PiAdapter", () => {
           (completed as Extract<ProviderRuntimeEvent, { type: "turn.completed" }>).payload.state,
           "completed",
         );
+      }),
+    );
+  });
+
+  it.effect("emits thread token usage from pi session stats at settlement", () => {
+    const h = makeHarness();
+    h.client.sessionStats = {
+      tokens: { input: 100, output: 50, cacheRead: 25, cacheWrite: 5, total: 180 },
+      contextUsage: { tokens: 120, contextWindow: 1000, percent: 12 },
+      cost: 0.01,
+    };
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        const collected = yield* Stream.takeUntil(
+          adapter.streamEvents,
+          (event) => event.type === "thread.token-usage.updated",
+        ).pipe(Stream.runCollect, Effect.forkChild);
+        const accepted = yield* adapter.sendTurn({
+          threadId: ThreadId.make("thread"),
+          input: "hello",
+          modelSelection,
+        });
+        yield* Queue.offer(h.client.input, { type: "agent_settled" });
+        const events = Array.from(yield* Fiber.join(collected));
+        assert.deepEqual(
+          events.map((event) => event.type),
+          ["turn.started", "turn.completed", "thread.token-usage.updated"],
+        );
+        assert.equal(h.client.calls.sessionStats, 1);
+        const usage = events[2] as Extract<
+          ProviderRuntimeEvent,
+          { type: "thread.token-usage.updated" }
+        >;
+        assert.equal(usage.turnId, accepted.turnId);
+        assert.equal(usage.payload.usage.usedTokens, 120);
+        assert.equal(usage.payload.usage.maxTokens, 1000);
+        assert.equal(usage.payload.usage.inputTokens, 100);
+        assert.equal(usage.payload.usage.outputTokens, 50);
+        assert.equal(usage.payload.usage.cachedInputTokens, 25);
       }),
     );
   });
