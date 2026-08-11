@@ -60,6 +60,7 @@ class FakeClient implements PiRpcClient {
     }>,
     thinking: [] as PiThinkingLevel[],
     sessionStats: 0,
+    compact: 0,
     extensionUiResponses: [] as Array<Record<string, unknown>>,
   };
   state: { sessionFile?: string; sessionId?: string; isStreaming?: boolean } = {};
@@ -93,7 +94,10 @@ class FakeClient implements PiRpcClient {
   cycleModel = () => Effect.die("unused");
   cycleThinkingLevel = () => Effect.die("unused");
   getAvailableThinkingLevels = () => Effect.die("unused");
-  compact = () => Effect.die("unused");
+  compact = () =>
+    Effect.sync(() => {
+      this.calls.compact += 1;
+    });
   abortRetry = () => Effect.die("unused");
   steer = () => Effect.die("unused");
   followUp = () => Effect.die("unused");
@@ -1264,6 +1268,18 @@ describe("PiAdapter", () => {
         assert.equal(usage.payload.usage.inputTokens, 100);
         assert.equal(usage.payload.usage.outputTokens, 50);
         assert.equal(usage.payload.usage.cachedInputTokens, 25);
+      }),
+    );
+  });
+
+  it.effect("compacts the pi session on compactThread", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        const compact = adapter.compactThread;
+        if (compact) yield* compact(ThreadId.make("thread"));
+        assert.equal(h.client.calls.compact, 1);
       }),
     );
   });

@@ -1245,6 +1245,9 @@ function ChatViewContent(props: ChatViewProps) {
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
+  const compactThread = useAtomCommand(threadEnvironment.compactThread, {
+    reportFailure: false,
+  });
   const respondToThreadApproval = useAtomCommand(threadEnvironment.respondToApproval, {
     reportFailure: false,
   });
@@ -4494,6 +4497,20 @@ function ChatViewContent(props: ChatViewProps) {
     // disable B's Stop button (review finding).
     setIsStoppingBackgroundWork(false);
   }, [activeThreadId]);
+  const handleCompactThread = useCallback(async () => {
+    if (!activeThread) return;
+    const result = await compactThread({
+      environmentId,
+      input: { threadId: activeThread.id },
+    });
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      setThreadError(
+        activeThread.id,
+        error instanceof Error ? error.message : "Failed to compact session context.",
+      );
+    }
+  }, [activeThread, environmentId, compactThread, setThreadError]);
   const handleStopBackgroundWork = useCallback(async () => {
     if (!activeThread) return;
     setIsStoppingBackgroundWork(true);
@@ -6558,6 +6575,7 @@ function ChatViewContent(props: ChatViewProps) {
                             composerElementContextsRef={composerElementContextsRef}
                             onSend={onSend}
                             onInterrupt={onInterrupt}
+                            onCompact={activeThread?.session ? handleCompactThread : undefined}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             onRespondToApproval={onRespondToApproval}
                             onSelectActivePendingUserInputOption={
