@@ -1595,7 +1595,7 @@ function extractToolDetail(
   payload: Record<string, unknown> | null,
   heading: string,
 ): string | null {
-  const rawDetail = asTrimmedString(payload?.detail);
+  const rawDetail = asTrimmedString(payload?.detail) ?? asTrimmedString(payload?.message);
   const detail = rawDetail ? stripTrailingExitCode(rawDetail).output : null;
   const normalizedHeading = normalizePreviewForComparison(heading);
   const normalizedDetail = normalizePreviewForComparison(detail);

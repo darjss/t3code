@@ -1053,6 +1053,97 @@ describe("PiAdapter", () => {
     );
   });
 
+  it.effect("settles a failed assistant run as a failed turn with the pi error message", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        const fence = yield* collectThroughSentinel(adapter);
+        const accepted = yield* adapter.sendTurn({
+          threadId: ThreadId.make("thread"),
+          input: "hello",
+          modelSelection,
+        });
+        fence.setSentinel(accepted.turnId);
+        yield* Queue.offerAll(h.client.input, [
+          {
+            type: "message_update",
+            assistantMessageEvent: { type: "thinking_delta", delta: "reasoning..." },
+          },
+          {
+            type: "message_end",
+            message: {
+              role: "assistant",
+              stopReason: "error",
+              errorMessage: "Rate limit exceeded",
+              content: "",
+            },
+          },
+          { type: "agent_settled" },
+        ]);
+        const events = Array.from(yield* Fiber.join(fence.collected));
+        const turnEvents = events.filter((event) => event.turnId === accepted.turnId);
+        assert.deepEqual(
+          turnEvents.map((event) => event.type),
+          ["turn.started", "item.started", "content.delta", "runtime.error", "turn.completed"],
+        );
+        const error = turnEvents.find((event) => event.type === "runtime.error");
+        assert.equal(
+          (error as Extract<ProviderRuntimeEvent, { type: "runtime.error" }>).payload.message,
+          "Rate limit exceeded",
+        );
+        const completed = turnEvents.find((event) => event.type === "turn.completed");
+        assert.equal(
+          (completed as Extract<ProviderRuntimeEvent, { type: "turn.completed" }>).payload.state,
+          "failed",
+        );
+      }),
+    );
+  });
+
+  it.effect("does not fail a turn when a later assistant message succeeds after a retry", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        const fence = yield* collectThroughSentinel(adapter);
+        const accepted = yield* adapter.sendTurn({
+          threadId: ThreadId.make("thread"),
+          input: "hello",
+          modelSelection,
+        });
+        fence.setSentinel(accepted.turnId);
+        yield* Queue.offerAll(h.client.input, [
+          {
+            type: "message_end",
+            message: {
+              role: "assistant",
+              stopReason: "error",
+              errorMessage: "transient failure",
+              content: "",
+            },
+          },
+          {
+            type: "message_end",
+            message: { role: "assistant", stopReason: "end_turn", content: "Recovered." },
+          },
+          { type: "agent_settled" },
+        ]);
+        const events = Array.from(yield* Fiber.join(fence.collected));
+        const turnEvents = events.filter((event) => event.turnId === accepted.turnId);
+        assert.equal(
+          turnEvents.some((event) => event.type === "runtime.error"),
+          false,
+        );
+        const completed = turnEvents.find((event) => event.type === "turn.completed");
+        assert.equal(
+          (completed as Extract<ProviderRuntimeEvent, { type: "turn.completed" }>).payload.state,
+          "completed",
+        );
+      }),
+    );
+  });
+
   it.effect("rejects startup when the transport event stream is already closed", () => {
     const h = makeHarness();
     h.client.events = Stream.empty;
