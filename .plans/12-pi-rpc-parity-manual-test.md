@@ -1,0 +1,193 @@
+# Pi Provider RPC Parity — Manual Test Checklist
+
+Manual QA guide for the Pi-provider improvements merged into this fork (commits `970ed712a` → `932e824f5`, plan: `.plans/11-pi-rpc-parity.md`). Run these against the rebuilt app before calling the work done.
+
+## Build under test
+
+- App: **T3-Pi Code 0.0.33** (`~/Applications/T3-Pi-Code-0.0.33-x86_64.AppImage`, also `release/`)
+- Launch: from the app launcher ("T3-Pi Code") or `~/Applications/T3-Pi-Code-0.0.33-x86_64.AppImage`
+- Provider: Pi (`pi --mode rpc`), any reasoning model
+
+## How to read results
+
+- **Work log** = the right-side activity column in a thread (tool calls, warnings, errors, compaction rows).
+- **Composer** = the input area at the bottom (context meter sits above it).
+- A failed/errored turn shows as a red row; a warning shows as an info row; the thread header shows the session state.
+
+---
+
+## 1. Failures surface as errors
+
+**What changed:** pi signals failure via `message_end`/`agent_end` (`stopReason: "error"`, `errorMessage`), which the adapter previously dropped — failed runs settled as successful. Now they settle as failed with the real message, and the error text reaches the work-log row.
+
+### 1a. Agent error mid-run
+1. Send a prompt that will make the agent error (e.g., ask it to use an invalid tool repeatedly, or revoke the API token mid-run).
+2. Wait for the run to end.
+
+**Expected:**
+- The turn ends with a **failed** state, not a silent stop.
+- A `runtime.error` row appears in the work log with the **actual error message** (e.g., "Rate limit exceeded", not a generic "Runtime error").
+- Thread session shows error state.
+
+### 1b. Idle crash / transport failure
+1. Start a session, let it go idle.
+2. Kill the pi RPC subprocess (or yank the provider's network) while idle.
+
+**Expected:** a `runtime.error` row surfaces ("Pi RPC event stream ended unexpectedly." or similar) instead of the session silently closing with nothing shown.
+
+### 1c. Prompt rejected at send
+1. Send a prompt while the session is busy streaming (no steering).
+2. **Expected:** the send fails with a visible error, the turn is marked failed, and the session stays usable for the next message.
+
+---
+
+## 2. Interrupt reliability
+
+**What changed:** stop no longer blocks on pi's abort (which waits for idle), and the adapter re-aborts runs that continue after an interrupt (queued steers).
+
+### 2a. Plain stop
+1. Start a long-running task (e.g., "write a 2000-line file").
+2. Hit **Stop** mid-run.
+
+**Expected:**
+- The run stops promptly; the Stop button does not hang in "stopping".
+- Turn completes with state `interrupted`.
+
+### 2b. Stop during thinking
+1. Start a task that thinks for a while (long reasoning).
+2. Stop while the thinking trace is streaming.
+
+**Expected:** stops promptly, turn marked interrupted.
+
+### 2c. Stop after a queued steer (the bug fix)
+1. Start a long task.
+2. Send a **steer** (a new message while running — it queues).
+3. Immediately hit **Stop**.
+
+**Expected:** both the current run AND the queued steer stop. No visible work continues after Stop. (Before the fix, the queued steer survived the abort and ran a whole extra turn.)
+
+### 2d. Stop → immediately send again
+1. Start a task, stop it.
+2. Send a new message right away.
+
+**Expected:** the new message sends and runs normally (no deadlock from the previous abort still in flight).
+
+---
+
+## 3. Tool snapshot perf
+
+**What changed:** pi's `tool_execution_update` partial results are cumulative snapshots; the adapter no longer persists an `item.updated` per update (could outrun the ingestion worker on long output).
+
+### 3a. Long command output
+1. Ask the agent to run a long-lived bash command (e.g., a loop printing many lines, or a big build).
+2. Watch the work log during execution.
+
+**Expected:**
+- The command row appears at start and completes at end — **no repeated "updated" churn** with duplicated output.
+- The work log stays responsive; no backlog of identical snapshots.
+
+### 3b. Subagent / workflow tools still report progress
+1. Send a prompt that spawns subagents or a workflow (if your pi setup has those tools).
+2. **Expected:** `task.started` / `task.progress` / `task.completed` rows still appear; only the item-level update spam is gone.
+
+---
+
+## 4. Context meter + usage
+
+**What changed:** the adapter now polls `get_session_stats` at settlement and emits `thread.token-usage.updated`, feeding the composer's context meter and the usage surface (previously dead for Pi).
+
+### 4a. Context meter appears
+1. Start a fresh thread, send a message, let the turn complete.
+2. **Expected:** a context meter appears above the composer showing used tokens vs. the model context window (e.g., "120 / 1000 tokens").
+
+### 4b. Accumulates across turns
+1. Send several messages in the same thread.
+2. **Expected:** the meter's used count grows monotonically.
+
+### 4c. Usage data
+1. Open the usage dashboard (Usage page).
+2. **Expected:** Pi sessions contribute usage rows (input/output tokens).
+
+### 4d. No stats yet
+1. On a brand-new thread with no completed turn, **Expected:** no context meter (nothing to show).
+
+---
+
+## 5. Dropped events now surface
+
+**What changed:** compaction, retries, session-name changes, and extension errors were dropped; they now map to visible rows.
+
+### 5a. Compaction
+1. Build a long thread, then trigger compaction:
+   - Click the **compact button** (stacked-lines icon next to Send), or
+   - Let pi auto-compact on threshold/overflow.
+2. **Expected:** a **"Context compaction"** row appears in the work log (in-progress while compacting, completed after).
+
+### 5b. Auto-retry
+1. Cause a transient failure (e.g., rate limit) with pi auto-retry enabled.
+2. **Expected:** an info row "Pi retrying (1/3): <error>" appears; a failed final retry shows "Pi retry failed: <error>".
+
+### 5c. Session renamed by the agent
+1. Ask the agent to rename the session (or use a pi extension/command that renames it).
+2. **Expected:** the thread title in the sidebar updates to the new name (thread.metadata.updated).
+
+### 5d. Extension error
+1. Trigger a pi extension error (e.g., a misbehaving extension).
+2. **Expected:** a warning row "Pi extension <path>: <message>" appears; the session does NOT flip to a hard error state.
+
+---
+
+## 6. Native commands (slash/skill surface removed)
+
+**What changed:** pi's extension slash-commands and skills are no longer surfaced from provider discovery (actions come from T3 natively); discovery no longer loads extensions/skills (faster startup); the RPC client gained `compact`, `cycleModel`, `cycleThinkingLevel`, `getAvailableThinkingLevels`, `abortRetry`, `steer`, `followUp`.
+
+### 6a. Compact button
+1. Open a thread with a live (non-stopped) session.
+2. **Expected:** a compact icon button (stacked lines) appears next to the Send button.
+3. Click it → session compacts, "Context compaction" row appears.
+4. On a thread with **no session** (fresh thread): **Expected:** no compact button.
+
+### 6b. Slash commands / skills gone
+1. Open the composer in a Pi thread.
+2. **Expected:** pi extension slash-commands and skills are **not** listed (no `/mycommand` suggestions from pi).
+
+### 6c. Model + thinking still work
+1. Change the model mid-session via the model picker.
+2. Toggle thinking level via the traits control.
+3. **Expected:** both apply (they go through `set_model` / `set_thinking_level`).
+
+### 6d. Discovery speed
+1. Open Settings → Providers → Pi.
+2. **Expected:** status resolves fast (extensions/skills/prompt templates are no longer loaded during discovery).
+
+---
+
+## 7. App launcher
+
+1. Open the app launcher (niri / fuzzel / etc.).
+2. **Expected:** "T3-Pi Code" with the app icon (16–512px icons installed).
+3. Launch it — **Expected:** app starts, appears in the taskbar as `t3-pi-code` (StartupWMClass).
+4. (Optional) Open a `t3code-pi://` link — should hand off to the app.
+
+---
+
+## Regression pass (the things that must still work)
+
+- Sending messages, images, steering mid-run.
+- **Interrupt** during: thinking, tool execution, post-turn.
+- Thread resume/restart (session files still owned/leased correctly).
+- Model picker + traits for Pi.
+- Other providers unaffected: Codex/Claude threads still stream thinking/tools the same way.
+- Work log: tool calls still render start/end with command/file-change details.
+
+---
+
+## Bug report template
+
+If something fails, capture:
+
+1. Which test (section number).
+2. What you did (exact prompt/actions).
+3. What you expected vs. what happened.
+4. The work-log rows (paste the row text).
+5. Anything in the app logs (T3 home `userdata` logs) around the failure timestamp.
