@@ -89,7 +89,6 @@ interface ActiveTurn {
   reasoningStarted: boolean;
   interruptRequested: boolean;
   failureMessage: string | undefined;
-  compactionItemId: RuntimeItemId | undefined;
   terminal: boolean;
 }
 
@@ -462,7 +461,6 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
       reasoningStarted: false,
       interruptRequested: false,
       failureMessage: undefined,
-      compactionItemId: undefined,
       terminal: false,
     };
     ctx.activeTurn = turn;
@@ -1009,40 +1007,23 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
       }
       return;
     }
-    if (!turn || turn.terminal) return;
     if (type === "compaction_start") {
-      turn.compactionItemId = RuntimeItemId.make(`pi-compaction:${turn.id}`);
-      yield* offer({
-        type: "item.started",
-        ...(yield* base(ctx, turn)),
-        itemId: turn.compactionItemId,
-        payload: {
-          itemType: "context_compaction",
-          status: "inProgress",
-          title: "Context compaction",
-          ...(string(event.reason) ? { detail: string(event.reason) } : {}),
-        },
-        raw: raw(native),
-      } as const);
+      // Session-level event: pi compacts both mid-turn (threshold/overflow)
+      // and when idle (manual compact). No turn is required.
       return;
     }
     if (type === "compaction_end") {
-      const itemId = turn.compactionItemId;
-      if (itemId) {
+      if (event.aborted !== true) {
         yield* offer({
-          type: "item.completed",
-          ...(yield* base(ctx, turn)),
-          itemId,
-          payload: {
-            itemType: "context_compaction",
-            status: event.aborted === true ? "failed" : "completed",
-            title: "Context compaction",
-          },
+          type: "thread.state.changed",
+          ...(yield* base(ctx)),
+          payload: { state: "compacted" },
           raw: raw(native),
         } as const);
       }
       return;
     }
+    if (!turn || turn.terminal) return;
     if (type === "auto_retry_start") {
       const attempt = finiteNonNegative(event.attempt);
       const maxAttempts = finiteNonNegative(event.maxAttempts);

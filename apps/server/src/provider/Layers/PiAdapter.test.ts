@@ -1284,12 +1284,69 @@ describe("PiAdapter", () => {
     );
   });
 
+  it.effect("projects idle manual compaction as a compacted thread state", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        const collected = yield* Stream.take(adapter.streamEvents, 1).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        // No active turn: manual compact happens while pi is idle.
+        yield* Queue.offerAll(h.client.input, [
+          { type: "compaction_start", reason: "manual" },
+          { type: "compaction_end", reason: "manual", aborted: false },
+        ]);
+        const events = Array.from(yield* Fiber.join(collected));
+        assert.deepEqual(
+          events.map((event) => event.type),
+          ["thread.state.changed"],
+        );
+        const compacted = events[0] as Extract<
+          ProviderRuntimeEvent,
+          { type: "thread.state.changed" }
+        >;
+        assert.equal(compacted.payload.state, "compacted");
+      }),
+    );
+  });
+
+  it.effect("drops an aborted compaction without emitting thread state", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        const collected = yield* Stream.take(adapter.streamEvents, 1).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Queue.offerAll(h.client.input, [
+          { type: "compaction_start", reason: "manual" },
+          { type: "compaction_end", reason: "manual", aborted: true },
+          // A later real event proves the aborted compaction emitted nothing.
+          { type: "session_info_changed", name: "After aborted compact" },
+        ]);
+        const events = Array.from(yield* Fiber.join(collected));
+        assert.deepEqual(
+          events.map((event) => event.type),
+          ["thread.metadata.updated"],
+        );
+        const metadata = events[0] as Extract<
+          ProviderRuntimeEvent,
+          { type: "thread.metadata.updated" }
+        >;
+        assert.equal(metadata.payload.name, "After aborted compact");
+      }),
+    );
+  });
+
   it.effect("projects compaction, retry, session-name, and extension-error events", () => {
     const h = makeHarness();
     return withAdapter(h, (adapter) =>
       Effect.gen(function* () {
         yield* start(adapter);
-        const collected = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        const collected = yield* Stream.take(adapter.streamEvents, 6).pipe(
           Stream.runCollect,
           Effect.forkChild,
         );
@@ -1314,8 +1371,7 @@ describe("PiAdapter", () => {
             "turn.started",
             "runtime.warning",
             "thread.metadata.updated",
-            "item.started",
-            "item.completed",
+            "thread.state.changed",
             "runtime.warning",
             "runtime.warning",
           ],
@@ -1330,17 +1386,14 @@ describe("PiAdapter", () => {
           { type: "thread.metadata.updated" }
         >;
         assert.equal(metadata.payload.name, "New thread name");
-        const compaction = events[3] as Extract<ProviderRuntimeEvent, { type: "item.started" }>;
-        assert.equal(compaction.payload.itemType, "context_compaction");
-        assert.equal(compaction.payload.status, "inProgress");
-        const compactionEnd = events[4] as Extract<
+        const compacted = events[3] as Extract<
           ProviderRuntimeEvent,
-          { type: "item.completed" }
+          { type: "thread.state.changed" }
         >;
-        assert.equal(compactionEnd.payload.status, "completed");
-        const retryStart = events[5] as Extract<ProviderRuntimeEvent, { type: "runtime.warning" }>;
+        assert.equal(compacted.payload.state, "compacted");
+        const retryStart = events[4] as Extract<ProviderRuntimeEvent, { type: "runtime.warning" }>;
         assert.equal(retryStart.payload.message, "Pi retrying (1/3): rate limited");
-        const retryEnd = events[6] as Extract<ProviderRuntimeEvent, { type: "runtime.warning" }>;
+        const retryEnd = events[5] as Extract<ProviderRuntimeEvent, { type: "runtime.warning" }>;
         assert.equal(retryEnd.payload.message, "Pi retry failed: still failing");
         assert.equal(events[0]?.turnId, accepted.turnId);
       }),
