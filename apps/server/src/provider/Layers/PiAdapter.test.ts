@@ -1261,6 +1261,69 @@ describe("PiAdapter", () => {
     );
   });
 
+  it.effect("projects compaction, retry, session-name, and extension-error events", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        const collected = yield* Stream.take(adapter.streamEvents, 7).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        const accepted = yield* adapter.sendTurn({
+          threadId: ThreadId.make("thread"),
+          input: "hello",
+          modelSelection,
+        });
+        yield* Queue.offerAll(h.client.input, [
+          { type: "extension_error", extensionPath: "/x/ext.ts", error: { message: "boom" } },
+          { type: "session_info_changed", name: "New thread name" },
+          { type: "compaction_start", reason: "threshold" },
+          { type: "compaction_end", reason: "threshold", aborted: false },
+          { type: "auto_retry_start", attempt: 1, maxAttempts: 3, errorMessage: "rate limited" },
+          { type: "auto_retry_end", success: false, attempt: 3, finalError: "still failing" },
+          { type: "agent_settled" },
+        ]);
+        const events = Array.from(yield* Fiber.join(collected));
+        assert.deepEqual(
+          events.map((event) => event.type),
+          [
+            "turn.started",
+            "runtime.warning",
+            "thread.metadata.updated",
+            "item.started",
+            "item.completed",
+            "runtime.warning",
+            "runtime.warning",
+          ],
+        );
+        const extensionWarning = events[1] as Extract<
+          ProviderRuntimeEvent,
+          { type: "runtime.warning" }
+        >;
+        assert.equal(extensionWarning.payload.message, "Pi extension /x/ext.ts: boom");
+        const metadata = events[2] as Extract<
+          ProviderRuntimeEvent,
+          { type: "thread.metadata.updated" }
+        >;
+        assert.equal(metadata.payload.name, "New thread name");
+        const compaction = events[3] as Extract<ProviderRuntimeEvent, { type: "item.started" }>;
+        assert.equal(compaction.payload.itemType, "context_compaction");
+        assert.equal(compaction.payload.status, "inProgress");
+        const compactionEnd = events[4] as Extract<
+          ProviderRuntimeEvent,
+          { type: "item.completed" }
+        >;
+        assert.equal(compactionEnd.payload.status, "completed");
+        const retryStart = events[5] as Extract<ProviderRuntimeEvent, { type: "runtime.warning" }>;
+        assert.equal(retryStart.payload.message, "Pi retrying (1/3): rate limited");
+        const retryEnd = events[6] as Extract<ProviderRuntimeEvent, { type: "runtime.warning" }>;
+        assert.equal(retryEnd.payload.message, "Pi retry failed: still failing");
+        assert.equal(events[0]?.turnId, accepted.turnId);
+      }),
+    );
+  });
+
   it.effect("rejects startup when the transport event stream is already closed", () => {
     const h = makeHarness();
     h.client.events = Stream.empty;
