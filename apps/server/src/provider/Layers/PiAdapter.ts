@@ -88,6 +88,7 @@ interface ActiveTurn {
   assistantStarted: boolean;
   reasoningStarted: boolean;
   interruptRequested: boolean;
+  failureMessage: string | undefined;
   terminal: boolean;
 }
 
@@ -456,6 +457,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
       assistantStarted: false,
       reasoningStarted: false,
       interruptRequested: false,
+      failureMessage: undefined,
       terminal: false,
     };
     ctx.activeTurn = turn;
@@ -542,25 +544,38 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
     fatal = true,
   ) {
     const turn = ctx.activeTurn;
-    if (!turn || turn.terminal) return;
-    const errorEvent = {
-      type: "runtime.error",
-      ...(yield* base(ctx, turn)),
-      payload: { message, class: "transport_error", ...(event ? { detail: event } : {}) },
-      ...(event ? { raw: raw(event) } : {}),
-    } as const;
-    const completedEvent = {
-      type: "turn.completed",
-      ...(yield* base(ctx, turn)),
-      payload: { state: "failed", errorMessage: message },
-    } as const;
-    yield* publishTerminal(
-      ctx,
-      turn,
-      [errorEvent, completedEvent],
-      fatal ? "error" : "ready",
-      fatal ? message : undefined,
-    );
+    if (turn && !turn.terminal) {
+      const errorEvent = {
+        type: "runtime.error",
+        ...(yield* base(ctx, turn)),
+        payload: { message, class: "transport_error", ...(event ? { detail: event } : {}) },
+        ...(event ? { raw: raw(event) } : {}),
+      } as const;
+      const completedEvent = {
+        type: "turn.completed",
+        ...(yield* base(ctx, turn)),
+        payload: { state: "failed", errorMessage: message },
+      } as const;
+      yield* publishTerminal(
+        ctx,
+        turn,
+        [errorEvent, completedEvent],
+        fatal ? "error" : "ready",
+        fatal ? message : undefined,
+      );
+      return;
+    }
+    // No active turn (idle crash or protocol failure): surface a session-level
+    // error so the UI still shows something instead of silently closing.
+    if (fatal) {
+      yield* offer({
+        type: "runtime.error",
+        ...(yield* base(ctx, turn)),
+        payload: { message, class: "transport_error", ...(event ? { detail: event } : {}) },
+        ...(event ? { raw: raw(event) } : {}),
+      } as const);
+      yield* close(ctx);
+    }
   });
 
   const toolEventKey = (event: Record<string, unknown>) =>
@@ -949,9 +964,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
           raw: raw(native),
         });
       } else if (updateType === "error") {
+        const error = isRecord(update?.error) ? update.error : undefined;
         yield* failActive(
           ctx,
-          string(update?.reason) ?? string(update?.error) ?? "Pi assistant failed.",
+          trimmedString(error?.errorMessage) ?? string(update?.reason) ?? "Pi assistant failed.",
           native,
         );
       }
@@ -959,6 +975,18 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
     }
     if (type === "message_end") {
       yield* handleSubagentResultMessage(ctx, turn, event, native);
+      const message = isRecord(event.message) ? event.message : undefined;
+      if (message?.role === "assistant") {
+        const stopReason = string(message.stopReason);
+        const errorMessage = trimmedString(message.errorMessage);
+        if (stopReason === "error" || (stopReason === "aborted" && !turn.interruptRequested)) {
+          turn.failureMessage =
+            errorMessage ??
+            (stopReason === "error" ? "Pi assistant failed." : "Pi assistant was aborted.");
+        } else {
+          turn.failureMessage = undefined;
+        }
+      }
       return;
     }
     if (type?.startsWith("tool_execution_")) {
@@ -1019,6 +1047,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
         return;
       }
       if (state.value.isStreaming === true) return;
+      if (turn.failureMessage && !turn.interruptRequested) {
+        yield* failActive(ctx, turn.failureMessage, native);
+        return;
+      }
       const terminalEvents: ProviderRuntimeEvent[] = [];
       if (turn.assistantText.trim().length > 0) {
         terminalEvents.push({

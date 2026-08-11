@@ -435,6 +435,7 @@ export function runtimeEventToActivities(
           summary: "Runtime error",
           payload: {
             message: truncateDetail(event.payload.message),
+            detail: truncateDetail(event.payload.message),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
