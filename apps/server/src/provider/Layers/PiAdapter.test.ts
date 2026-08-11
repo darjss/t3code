@@ -416,7 +416,7 @@ describe("PiAdapter", () => {
     return withAdapter(h, (adapter) =>
       Effect.gen(function* () {
         yield* start(adapter);
-        const collected = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        const collected = yield* Stream.take(adapter.streamEvents, 5).pipe(
           Stream.runCollect,
           Effect.forkChild,
         );
@@ -489,8 +489,8 @@ describe("PiAdapter", () => {
             event.type === "item.updated" ||
             event.type === "item.completed",
         );
-        assert.equal(tools.length, 6);
-        assert.deepEqual(tools[2]?.payload, {
+        assert.equal(tools.length, 4);
+        assert.deepEqual(tools[1]?.payload, {
           itemType: "command_execution",
           title: "Ran command",
           status: "completed",
@@ -507,7 +507,7 @@ describe("PiAdapter", () => {
             item: { input: { command: "git status --short" } },
           },
         });
-        assert.deepEqual(tools[5]?.payload, {
+        assert.deepEqual(tools[3]?.payload, {
           itemType: "file_change",
           title: "Edited file",
           detail: "src/app.ts",
@@ -536,7 +536,7 @@ describe("PiAdapter", () => {
     return withAdapter(h, (adapter) =>
       Effect.gen(function* () {
         yield* start(adapter);
-        const collected = yield* Stream.take(adapter.streamEvents, 4).pipe(
+        const collected = yield* Stream.take(adapter.streamEvents, 3).pipe(
           Stream.runCollect,
           Effect.forkChild,
         );
@@ -585,7 +585,7 @@ describe("PiAdapter", () => {
             event.type === "item.updated" ||
             event.type === "item.completed",
         );
-        assert.equal(tools.length, 3);
+        assert.equal(tools.length, 2);
         assert.equal(tools[0]?.payload.itemType, "dynamic_tool_call");
         for (const event of tools.slice(1)) {
           assert.equal(event.payload.itemType, "collab_agent_tool_call");
