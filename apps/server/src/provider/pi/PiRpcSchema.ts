@@ -33,6 +33,34 @@ export const PiRpcState = Schema.Struct({
 });
 export type PiRpcState = typeof PiRpcState.Type;
 
+export const PiRpcSessionStats = Schema.Struct({
+  sessionFile: Schema.optional(Schema.String),
+  sessionId: Schema.optional(Schema.String),
+  userMessages: Schema.optional(Schema.Number),
+  assistantMessages: Schema.optional(Schema.Number),
+  toolCalls: Schema.optional(Schema.Number),
+  toolResults: Schema.optional(Schema.Number),
+  totalMessages: Schema.optional(Schema.Number),
+  tokens: Schema.optional(
+    Schema.Struct({
+      input: Schema.optional(Schema.Number),
+      output: Schema.optional(Schema.Number),
+      cacheRead: Schema.optional(Schema.Number),
+      cacheWrite: Schema.optional(Schema.Number),
+      total: Schema.optional(Schema.Number),
+    }),
+  ),
+  cost: Schema.optional(Schema.Number),
+  contextUsage: Schema.optional(
+    Schema.Struct({
+      tokens: Schema.optional(Schema.NullOr(Schema.Number)),
+      contextWindow: Schema.optional(Schema.Number),
+      percent: Schema.optional(Schema.NullOr(Schema.Number)),
+    }),
+  ),
+});
+export type PiRpcSessionStats = typeof PiRpcSessionStats.Type;
+
 export const PiRpcAvailableModels = Schema.Struct({ models: Schema.Array(PiRpcModel) });
 export type PiRpcAvailableModels = typeof PiRpcAvailableModels.Type;
 

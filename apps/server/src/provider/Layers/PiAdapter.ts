@@ -125,6 +125,9 @@ interface SessionContext {
   steeringPromptsInFlight: number;
   steeringGeneration: number;
   deferredSettlement: PiRpcEvent | undefined;
+  lastUsageTotals:
+    | { readonly total: number; readonly input: number; readonly output: number }
+    | undefined;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingExtensionInput>;
   readonly agentTasksByToolCall: Map<string, PiAgentTask>;
   readonly agentTasksById: Map<string, PiAgentTask>;
@@ -904,6 +907,52 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
     return true;
   });
 
+  const emitThreadUsage = Effect.fn("PiAdapter.emitThreadUsage")(function* (
+    ctx: SessionContext,
+    turn: ActiveTurn,
+  ) {
+    const stats = yield* ctx.client.getSessionStats().pipe(
+      Effect.mapError((cause) => request("get_session_stats", cause)),
+      Effect.exit,
+    );
+    if (Exit.isFailure(stats)) return;
+    const value = stats.value;
+    const tokens = isRecord(value.tokens) ? value.tokens : undefined;
+    const contextUsage = isRecord(value.contextUsage) ? value.contextUsage : undefined;
+    const total = finiteNonNegative(tokens?.total);
+    if (total <= 0) return;
+    const input = finiteNonNegative(tokens?.input);
+    const output = finiteNonNegative(tokens?.output);
+    const cacheRead = finiteNonNegative(tokens?.cacheRead);
+    const contextTokens = finiteNonNegative(contextUsage?.tokens);
+    const contextWindow = finiteNonNegative(contextUsage?.contextWindow);
+    const prev = ctx.lastUsageTotals;
+    ctx.lastUsageTotals = { total, input, output };
+    const usedTokens = contextTokens ?? total;
+    const lastUsedTokens = prev ? Math.max(0, usedTokens - prev.total) : undefined;
+    const lastInputTokens = prev ? Math.max(0, input - prev.input) : undefined;
+    const lastOutputTokens = prev ? Math.max(0, output - prev.output) : undefined;
+    yield* offer({
+      type: "thread.token-usage.updated",
+      ...(yield* base(ctx, turn)),
+      payload: {
+        usage: {
+          usedTokens,
+          ...(contextWindow ? { maxTokens: contextWindow } : {}),
+          ...(total > usedTokens ? { totalProcessedTokens: total } : {}),
+          ...(input > 0 ? { inputTokens: input } : {}),
+          ...(cacheRead > 0 ? { cachedInputTokens: cacheRead } : {}),
+          ...(output > 0 ? { outputTokens: output } : {}),
+          ...(lastUsedTokens !== undefined ? { lastUsedTokens } : {}),
+          ...(lastInputTokens !== undefined && lastInputTokens > 0 ? { lastInputTokens } : {}),
+          ...(lastOutputTokens !== undefined && lastOutputTokens > 0 ? { lastOutputTokens } : {}),
+          compactsAutomatically: true,
+        },
+      },
+      raw: raw({ type: "session_stats" }),
+    } as const);
+  });
+
   const handleEvent = Effect.fn("PiAdapter.handleEvent")(function* (
     ctx: SessionContext,
     native: PiRpcEvent,
@@ -1099,7 +1148,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
         },
         raw: raw(native),
       });
-      yield* publishTerminal(ctx, turn, terminalEvents, "ready");
+      const published = yield* publishTerminal(ctx, turn, terminalEvents, "ready");
+      if (published && !turn.interruptRequested) {
+        yield* emitThreadUsage(ctx, turn);
+      }
     }
     // agent_end and turn_end are native cycle boundaries, not T3 settlement.
   });
@@ -1297,6 +1349,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
             steeringPromptsInFlight: 0,
             steeringGeneration: 0,
             deferredSettlement: undefined,
+            lastUsageTotals: undefined,
             pendingUserInputs: new Map(),
             agentTasksByToolCall: new Map(),
             agentTasksById: new Map(),
