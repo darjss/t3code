@@ -89,6 +89,7 @@ interface ActiveTurn {
   reasoningStarted: boolean;
   interruptRequested: boolean;
   failureMessage: string | undefined;
+  compactionItemId: RuntimeItemId | undefined;
   terminal: boolean;
 }
 
@@ -461,6 +462,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
       reasoningStarted: false,
       interruptRequested: false,
       failureMessage: undefined,
+      compactionItemId: undefined,
       terminal: false,
     };
     ctx.activeTurn = turn;
@@ -981,7 +983,93 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
       }
       return;
     }
+    if (type === "extension_error") {
+      const extensionPath = trimmedString(event.extensionPath);
+      const error = isRecord(event.error) ? event.error : undefined;
+      const message = trimmedString(error?.message) ?? string(event.error) ?? "Pi extension error";
+      yield* offer({
+        type: "runtime.warning",
+        ...(yield* base(ctx, turn)),
+        payload: {
+          message: extensionPath ? `Pi extension ${extensionPath}: ${message}` : message,
+        },
+        raw: raw(native),
+      } as const);
+      return;
+    }
+    if (type === "session_info_changed") {
+      const name = trimmedString(event.name);
+      if (name) {
+        yield* offer({
+          type: "thread.metadata.updated",
+          ...(yield* base(ctx, turn)),
+          payload: { name },
+          raw: raw(native),
+        } as const);
+      }
+      return;
+    }
     if (!turn || turn.terminal) return;
+    if (type === "compaction_start") {
+      turn.compactionItemId = RuntimeItemId.make(`pi-compaction:${turn.id}`);
+      yield* offer({
+        type: "item.started",
+        ...(yield* base(ctx, turn)),
+        itemId: turn.compactionItemId,
+        payload: {
+          itemType: "context_compaction",
+          status: "inProgress",
+          title: "Context compaction",
+          ...(string(event.reason) ? { detail: string(event.reason) } : {}),
+        },
+        raw: raw(native),
+      } as const);
+      return;
+    }
+    if (type === "compaction_end") {
+      const itemId = turn.compactionItemId;
+      if (itemId) {
+        yield* offer({
+          type: "item.completed",
+          ...(yield* base(ctx, turn)),
+          itemId,
+          payload: {
+            itemType: "context_compaction",
+            status: event.aborted === true ? "failed" : "completed",
+            title: "Context compaction",
+          },
+          raw: raw(native),
+        } as const);
+      }
+      return;
+    }
+    if (type === "auto_retry_start") {
+      const attempt = finiteNonNegative(event.attempt);
+      const maxAttempts = finiteNonNegative(event.maxAttempts);
+      const errorMessage = trimmedString(event.errorMessage);
+      yield* offer({
+        type: "runtime.warning",
+        ...(yield* base(ctx, turn)),
+        payload: {
+          message:
+            maxAttempts > 0
+              ? `Pi retrying (${attempt}/${maxAttempts})${errorMessage ? `: ${errorMessage}` : ""}`
+              : `Pi retrying${errorMessage ? `: ${errorMessage}` : ""}`,
+        },
+        raw: raw(native),
+      } as const);
+      return;
+    }
+    if (type === "auto_retry_end" && event.success !== true) {
+      const finalError = trimmedString(event.finalError);
+      yield* offer({
+        type: "runtime.warning",
+        ...(yield* base(ctx, turn)),
+        payload: { message: `Pi retry failed${finalError ? `: ${finalError}` : ""}` },
+        raw: raw(native),
+      } as const);
+      return;
+    }
     if (type === "message_update") {
       const update = isRecord(event.assistantMessageEvent)
         ? event.assistantMessageEvent
