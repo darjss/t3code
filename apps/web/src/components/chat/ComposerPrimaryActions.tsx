@@ -33,6 +33,7 @@ interface ComposerPrimaryActionsProps {
   showSendWhileRunning?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
+  onCompact?: (() => void) | undefined;
   onImplementPlanInNewThread: () => void;
 }
 
@@ -74,6 +75,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   showSendWhileRunning = false,
   onPreviousPendingQuestion,
   onInterrupt,
+  onCompact,
   onImplementPlanInNewThread,
 }: ComposerPrimaryActionsProps) {
   const pointerFocusProps = preserveComposerFocusOnPointerDown
@@ -218,6 +220,30 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     );
   }
 
+  const compactButton =
+    onCompact !== undefined ? (
+      <button
+        type="button"
+        className={cn(
+          "flex cursor-pointer items-center justify-center rounded-full border border-foreground/10 bg-surface-secondary text-secondary-label transition-all duration-150 hover:scale-105 hover:bg-surface-hover",
+          compact ? "size-8 sm:size-7" : "size-8 sm:h-8 sm:w-8",
+        )}
+        {...pointerFocusProps}
+        onClick={() => void onCompact()}
+        aria-label="Compact session context"
+        title="Compact session context"
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <path
+            d="M2 3.5h8M2 6h5M2 8.5h8"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      </button>
+    ) : null;
+
   const sendButton = (
     <button
       type="submit"
@@ -271,7 +297,12 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   );
 
   if (!isRunning) {
-    return sendButton;
+    return (
+      <div className={cn("flex items-center justify-end", compact ? "gap-1.5" : "gap-2")}>
+        {compactButton}
+        {sendButton}
+      </div>
+    );
   }
 
   return (

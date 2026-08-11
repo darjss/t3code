@@ -1650,6 +1650,16 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
         );
       }),
     );
+  const compactThread: NonNullable<ProviderAdapterShape<ProviderAdapterError>["compactThread"]> = (
+    threadId,
+  ) =>
+    withThreadLock(
+      threadId,
+      Effect.gen(function* () {
+        const ctx = yield* requireSession(threadId);
+        yield* ctx.client.compact().pipe(Effect.mapError((cause) => request("compact", cause)));
+      }),
+    );
   const unsupported = (operation: string, threadId: ThreadId) =>
     requireSession(threadId).pipe(
       Effect.andThen(validation(operation, `Pi does not support ${operation}.`)),
@@ -1690,6 +1700,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
     startSession,
     sendTurn,
     interruptTurn,
+    compactThread,
     respondToRequest: (threadId) => unsupported("respondToRequest", threadId),
     respondToUserInput,
     readThread: (threadId) => unsupported("readThread", threadId),
