@@ -996,12 +996,6 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
       return;
     }
     if (type?.startsWith("tool_execution_")) {
-      const lifecycle =
-        type === "tool_execution_start"
-          ? "item.started"
-          : type === "tool_execution_update"
-            ? "item.updated"
-            : "item.completed";
       const itemId = yield* itemForTool(turn, event);
       const toolKey = toolEventKey(event);
       const eventArgs = isRecord(event.args) ? event.args : undefined;
@@ -1013,14 +1007,19 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
       const isError = event.isError === true;
       yield* handleSubagentToolEvent(ctx, turn, presentationEvent, native);
       yield* handleWorkflowToolEvent(ctx, turn, presentationEvent, native);
+      if (type === "tool_execution_update") {
+        // pi's partial result is a cumulative snapshot, not a delta; persisting
+        // every snapshot duplicates all prior output and can outrun the serial
+        // ingestion worker. Track args and workflow progress, skip the item.
+        return;
+      }
       yield* offer({
-        type: lifecycle,
+        type: type === "tool_execution_start" ? "item.started" : "item.completed",
         ...(yield* base(ctx, turn)),
         itemId,
         payload: {
           ...piToolPresentation(presentationEvent),
-          status:
-            lifecycle === "item.completed" ? (isError ? "failed" : "completed") : "inProgress",
+          status: type === "tool_execution_start" ? "inProgress" : isError ? "failed" : "completed",
         },
         raw: raw(native),
       } as ProviderRuntimeEvent);
