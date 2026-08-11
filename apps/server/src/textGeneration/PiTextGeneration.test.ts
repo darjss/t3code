@@ -37,6 +37,13 @@ class FakeClient implements PiRpcClient {
   getAvailableModels = () => Effect.succeed({ models: [] });
   getCommands = () => Effect.succeed({ commands: [] });
   getSessionStats = () => Effect.succeed({});
+  cycleModel = () => Effect.die("unused");
+  cycleThinkingLevel = () => Effect.die("unused");
+  getAvailableThinkingLevels = () => Effect.die("unused");
+  compact = () => Effect.die("unused");
+  abortRetry = () => Effect.die("unused");
+  steer = () => Effect.die("unused");
+  followUp = () => Effect.die("unused");
   setModel = (provider: string, modelId: string) =>
     Effect.sync(() => {
       this.models.push([provider, modelId]);

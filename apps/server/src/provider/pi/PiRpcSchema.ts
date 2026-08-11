@@ -33,6 +33,12 @@ export const PiRpcState = Schema.Struct({
 });
 export type PiRpcState = typeof PiRpcState.Type;
 
+export const PiRpcThinkingLevels = Schema.Struct({ levels: Schema.Array(PiThinkingLevel) });
+export type PiRpcThinkingLevels = typeof PiRpcThinkingLevels.Type;
+
+export const PiRpcCycleThinkingLevel = Schema.Struct({ level: PiThinkingLevel });
+export type PiRpcCycleThinkingLevel = typeof PiRpcCycleThinkingLevel.Type;
+
 export const PiRpcSessionStats = Schema.Struct({
   sessionFile: Schema.optional(Schema.String),
   sessionId: Schema.optional(Schema.String),

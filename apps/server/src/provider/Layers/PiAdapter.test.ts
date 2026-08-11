@@ -90,6 +90,13 @@ class FakeClient implements PiRpcClient {
       this.calls.sessionStats += 1;
       return this.sessionStats;
     });
+  cycleModel = () => Effect.die("unused");
+  cycleThinkingLevel = () => Effect.die("unused");
+  getAvailableThinkingLevels = () => Effect.die("unused");
+  compact = () => Effect.die("unused");
+  abortRetry = () => Effect.die("unused");
+  steer = () => Effect.die("unused");
+  followUp = () => Effect.die("unused");
   getAvailableModels = () => {
     const self = this;
     return Effect.gen(function* () {

@@ -37,6 +37,22 @@ const makeIo = Effect.fn("PiRpcClient.test.makeIo")(function* () {
   } as const;
 });
 
+const respondWithData = (
+  stdout: Queue.Queue<Uint8Array, Cause.Done<void>>,
+  request: string,
+  data: unknown,
+) => {
+  const parsed = parseCommand(request) as { readonly id: string; readonly type: string };
+  return Queue.offer(
+    stdout,
+    bytes(
+      `${JSON.stringify({ type: "response", command: parsed.type, success: true, id: parsed.id, data })}\n`,
+    ),
+  );
+};
+
+const parseCommand = (text: string) => JSON.parse(text) as Record<string, unknown>;
+
 const respondTo = (stdout: Queue.Queue<Uint8Array, Cause.Done<void>>, request: string) => {
   const parsed = JSON.parse(request) as { readonly id: string; readonly type: string };
   return Queue.offer(
@@ -228,6 +244,78 @@ describe("PiRpcClient transport", () => {
       expect(
         writes.map((write) => (JSON.parse(write) as { message: string }).message).sort(),
       ).toEqual(["second", "third"]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("writes native session-control commands with their payloads", () =>
+    Effect.gen(function* () {
+      const test = yield* makeIo();
+      const client = yield* makePiRpcTransport(test.io);
+
+      const compactFiber = yield* client.compact("summarize the context").pipe(Effect.forkScoped);
+      const compactWrite = yield* Queue.take(test.writes);
+      const compactParsed = parseCommand(compactWrite) as {
+        readonly type: string;
+        readonly customInstructions: string;
+      };
+      expect(compactParsed.type).toBe("compact");
+      expect(compactParsed.customInstructions).toBe("summarize the context");
+      yield* respondTo(test.stdout, compactWrite);
+      yield* Fiber.join(compactFiber);
+
+      const abortRetryFiber = yield* client.abortRetry().pipe(Effect.forkScoped);
+      const abortRetryWrite = yield* Queue.take(test.writes);
+      expect((parseCommand(abortRetryWrite) as { readonly type: string }).type).toBe("abort_retry");
+      yield* respondTo(test.stdout, abortRetryWrite);
+      yield* Fiber.join(abortRetryFiber);
+
+      const steerFiber = yield* client.steer("change direction").pipe(Effect.forkScoped);
+      const steerWrite = yield* Queue.take(test.writes);
+      const steerParsed = parseCommand(steerWrite) as {
+        readonly type: string;
+        readonly message: string;
+      };
+      expect(steerParsed.type).toBe("steer");
+      expect(steerParsed.message).toBe("change direction");
+      yield* respondTo(test.stdout, steerWrite);
+      yield* Fiber.join(steerFiber);
+
+      const followUpFiber = yield* client.followUp("then clean up").pipe(Effect.forkScoped);
+      const followUpWrite = yield* Queue.take(test.writes);
+      const followUpParsed = parseCommand(followUpWrite) as {
+        readonly type: string;
+        readonly message: string;
+      };
+      expect(followUpParsed.type).toBe("follow_up");
+      expect(followUpParsed.message).toBe("then clean up");
+      yield* respondTo(test.stdout, followUpWrite);
+      yield* Fiber.join(followUpFiber);
+
+      const levelsFiber = yield* client.getAvailableThinkingLevels().pipe(Effect.forkScoped);
+      const levelsWrite = yield* Queue.take(test.writes);
+      expect((parseCommand(levelsWrite) as { readonly type: string }).type).toBe(
+        "get_available_thinking_levels",
+      );
+      yield* respondWithData(test.stdout, levelsWrite, { levels: ["off", "high"] });
+      expect((yield* Fiber.join(levelsFiber)).levels).toEqual(["off", "high"]);
+
+      const cycleModelFiber = yield* client.cycleModel().pipe(Effect.forkScoped);
+      const cycleModelWrite = yield* Queue.take(test.writes);
+      expect((parseCommand(cycleModelWrite) as { readonly type: string }).type).toBe("cycle_model");
+      yield* respondWithData(test.stdout, cycleModelWrite, {
+        provider: "openai compatible",
+        id: "gpt/5",
+        reasoning: true,
+      });
+      expect((yield* Fiber.join(cycleModelFiber))?.id).toBe("gpt/5");
+
+      const cycleLevelFiber = yield* client.cycleThinkingLevel().pipe(Effect.forkScoped);
+      const cycleLevelWrite = yield* Queue.take(test.writes);
+      expect((parseCommand(cycleLevelWrite) as { readonly type: string }).type).toBe(
+        "cycle_thinking_level",
+      );
+      yield* respondWithData(test.stdout, cycleLevelWrite, { level: "high" });
+      expect((yield* Fiber.join(cycleLevelFiber))?.level).toBe("high");
     }).pipe(Effect.scoped),
   );
 

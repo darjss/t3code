@@ -14,12 +14,14 @@ import {
   isPiRpcResponse,
   PiRpcAvailableModels,
   PiRpcCommands,
+  PiRpcCycleThinkingLevel,
   type PiRpcEvent,
   PiRpcModel,
   type PiRpcRawEvent,
   type PiRpcResponse,
   PiRpcSessionStats,
   PiRpcState,
+  PiRpcThinkingLevels,
   type PiThinkingLevel,
 } from "./PiRpcSchema.ts";
 
@@ -74,6 +76,19 @@ export interface PiRpcClient {
   readonly getCommands: () => Effect.Effect<PiRpcCommands, PiRpcError>;
   readonly setModel: (provider: string, modelId: string) => Effect.Effect<PiRpcModel, PiRpcError>;
   readonly setThinkingLevel: (level: PiThinkingLevel) => Effect.Effect<void, PiRpcError>;
+  readonly cycleModel: () => Effect.Effect<PiRpcModel | null, PiRpcError>;
+  readonly cycleThinkingLevel: () => Effect.Effect<PiRpcCycleThinkingLevel | null, PiRpcError>;
+  readonly getAvailableThinkingLevels: () => Effect.Effect<PiRpcThinkingLevels, PiRpcError>;
+  readonly compact: (customInstructions?: string) => Effect.Effect<void, PiRpcError>;
+  readonly abortRetry: () => Effect.Effect<void, PiRpcError>;
+  readonly steer: (
+    message: string,
+    images?: ReadonlyArray<PiRpcImage>,
+  ) => Effect.Effect<void, PiRpcError>;
+  readonly followUp: (
+    message: string,
+    images?: ReadonlyArray<PiRpcImage>,
+  ) => Effect.Effect<void, PiRpcError>;
   readonly prompt: (
     message: string,
     images?: ReadonlyArray<PiRpcImage>,
@@ -139,6 +154,32 @@ export const makePiRpcTransport = Effect.fn("PiRpcClient.makeTransport")(functio
       Effect.mapError(
         (cause) =>
           new PiRpcProtocolError({ detail: "invalid get_session_stats response data", cause }),
+      ),
+    );
+  const decodeCycleModel = (data: unknown) =>
+    Schema.decodeUnknownEffect(Schema.NullOr(PiRpcModel))(data).pipe(
+      Effect.mapError(
+        (cause) => new PiRpcProtocolError({ detail: "invalid cycle_model response data", cause }),
+      ),
+    );
+  const decodeCycleThinkingLevel = (data: unknown) =>
+    Schema.decodeUnknownEffect(Schema.NullOr(PiRpcCycleThinkingLevel))(data).pipe(
+      Effect.mapError(
+        (cause) =>
+          new PiRpcProtocolError({
+            detail: "invalid cycle_thinking_level response data",
+            cause,
+          }),
+      ),
+    );
+  const decodeThinkingLevels = (data: unknown) =>
+    Schema.decodeUnknownEffect(PiRpcThinkingLevels)(data).pipe(
+      Effect.mapError(
+        (cause) =>
+          new PiRpcProtocolError({
+            detail: "invalid get_available_thinking_levels response data",
+            cause,
+          }),
       ),
     );
 
@@ -299,6 +340,31 @@ export const makePiRpcTransport = Effect.fn("PiRpcClient.makeTransport")(functio
     events: Stream.fromQueue(events),
     getState: () => request("get_state", {}, decodeState),
     getSessionStats: () => request("get_session_stats", {}, decodeSessionStats),
+    cycleModel: () => request("cycle_model", {}, decodeCycleModel),
+    cycleThinkingLevel: () => request("cycle_thinking_level", {}, decodeCycleThinkingLevel),
+    getAvailableThinkingLevels: () =>
+      request("get_available_thinking_levels", {}, decodeThinkingLevels),
+    compact: (customInstructions) =>
+      request("compact", customInstructions ? { customInstructions } : {}, () => Effect.void),
+    abortRetry: () => request("abort_retry", {}, () => Effect.void),
+    steer: (message, images) =>
+      request(
+        "steer",
+        {
+          message,
+          ...(images && images.length > 0 ? { images } : {}),
+        },
+        () => Effect.void,
+      ),
+    followUp: (message, images) =>
+      request(
+        "follow_up",
+        {
+          message,
+          ...(images && images.length > 0 ? { images } : {}),
+        },
+        () => Effect.void,
+      ),
     getAvailableModels: () => request("get_available_models", {}, decodeModels),
     getCommands: () => request("get_commands", {}, decodeCommands),
     setModel: (provider, modelId) => request("set_model", { provider, modelId }, decodeModel),

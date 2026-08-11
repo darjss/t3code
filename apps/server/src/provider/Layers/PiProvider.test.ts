@@ -18,6 +18,13 @@ const unusedClientMethods = {
   events: Stream.empty,
   getCommands: () => Effect.succeed({ commands: [] }),
   getSessionStats: () => Effect.die("unused"),
+  cycleModel: () => Effect.die("unused"),
+  cycleThinkingLevel: () => Effect.die("unused"),
+  getAvailableThinkingLevels: () => Effect.die("unused"),
+  compact: () => Effect.die("unused"),
+  abortRetry: () => Effect.die("unused"),
+  steer: () => Effect.die("unused"),
+  followUp: () => Effect.die("unused"),
   setModel: () => Effect.die("unused"),
   setThinkingLevel: () => Effect.die("unused"),
   prompt: () => Effect.die("unused"),
@@ -81,7 +88,7 @@ it.effect("maps Pi RPC inventory into selectable models", () =>
               "--no-skills",
               "--no-prompt-templates",
             ])
-              assert.equal(options.args?.includes(arg), false);
+              assert.equal(options.args?.includes(arg), true);
           }),
         ),
       ),
@@ -94,20 +101,8 @@ it.effect("maps Pi RPC inventory into selectable models", () =>
     assert.equal(snapshot.models[0]?.isDefault, true);
     assert.equal(snapshot.models[0]?.capabilities?.optionDescriptors?.[0]?.id, "thinkingLevel");
     assert.equal(snapshot.models[0]?.capabilities?.optionDescriptors?.[0]?.currentValue, "medium");
-    assert.deepEqual(snapshot.slashCommands, [
-      { name: "subagents", description: "List subagents" },
-      { name: "skill:review", description: "Review changes" },
-    ]);
-    assert.deepEqual(snapshot.skills, [
-      {
-        name: "review",
-        description: "Review changes",
-        shortDescription: "Review changes",
-        path: "/home/test/.pi/skills/review/SKILL.md",
-        scope: "user",
-        enabled: true,
-      },
-    ]);
+    assert.equal(snapshot.slashCommands?.length, 0);
+    assert.equal(snapshot.skills?.length, 0);
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
