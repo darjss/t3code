@@ -881,6 +881,76 @@ describe("PiAdapter", () => {
     },
   );
 
+  it.effect("re-aborts a pi run that keeps streaming after an interrupt", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        const fence = yield* collectThroughSentinel(adapter);
+        const accepted = yield* adapter.sendTurn({
+          threadId: ThreadId.make("thread"),
+          input: "hello",
+          modelSelection,
+        });
+        fence.setSentinel(accepted.turnId);
+        yield* adapter.interruptTurn(ThreadId.make("thread"), accepted.turnId);
+        while (h.client.calls.abort < 1) yield* Effect.yieldNow;
+        h.client.getStateResults = [{ ...h.client.state, isStreaming: true }, h.client.state];
+        yield* Queue.offerAll(h.client.input, [
+          { type: "agent_settled" },
+          { type: "agent_settled" },
+        ]);
+        const events = Array.from(yield* Fiber.join(fence.collected));
+        while (h.client.calls.abort < 2) yield* Effect.yieldNow;
+        assert.equal(h.client.calls.abort, 2);
+        const terminal = events.filter(
+          (event) => event.type === "turn.completed" && event.turnId === accepted.turnId,
+        );
+        assert.equal(terminal.length, 1);
+        assert.equal(
+          (terminal[0] as Extract<ProviderRuntimeEvent, { type: "turn.completed" }>).payload.state,
+          "interrupted",
+        );
+      }),
+    );
+  });
+
+  it.effect("aborts a steer continuation that starts after an interrupt", () => {
+    const h = makeHarness();
+    return withAdapter(h, (adapter) =>
+      Effect.gen(function* () {
+        yield* start(adapter);
+        const fence = yield* collectThroughSentinel(adapter);
+        const accepted = yield* adapter.sendTurn({
+          threadId: ThreadId.make("thread"),
+          input: "hello",
+          modelSelection,
+        });
+        fence.setSentinel(accepted.turnId);
+        yield* Queue.offer(h.client.input, { type: "agent_start" });
+        const steer = yield* adapter.sendTurn({
+          threadId: ThreadId.make("thread"),
+          input: "instead do this",
+          modelSelection,
+        });
+        yield* adapter.interruptTurn(ThreadId.make("thread"), accepted.turnId);
+        yield* Queue.offer(h.client.input, { type: "agent_start" });
+        yield* Queue.offer(h.client.input, { type: "agent_settled" });
+        const events = Array.from(yield* Fiber.join(fence.collected));
+        assert.equal(h.client.calls.abort, 2);
+        const terminal = events.filter(
+          (event) => event.type === "turn.completed" && event.turnId === accepted.turnId,
+        );
+        assert.equal(terminal.length, 1);
+        assert.equal(
+          (terminal[0] as Extract<ProviderRuntimeEvent, { type: "turn.completed" }>).payload.state,
+          "interrupted",
+        );
+        assert.equal(steer.turnId, accepted.turnId);
+      }),
+    );
+  });
+
   it.effect("terminalizes an accepted turn before explicit stop closes its session", () => {
     const h = makeHarness();
     return withAdapter(h, (adapter) =>
@@ -1396,6 +1466,7 @@ describe("PiAdapter", () => {
           yield* Deferred.await(h.client.promptEntered!);
 
           yield* adapter.interruptTurn(ThreadId.make("thread"), first.turnId);
+          while (h.client.calls.abort < 1) yield* Effect.yieldNow;
           assert.equal(h.client.calls.abort, 1);
           const interruptingSteer = yield* Fiber.interrupt(steering).pipe(Effect.forkChild);
           yield* Deferred.succeed(h.client.promptGate!, undefined);
@@ -1404,6 +1475,7 @@ describe("PiAdapter", () => {
           assert.equal(running?.status, "running");
           assert.equal(running?.activeTurnId, first.turnId);
           assert.equal(h.client.calls.close, 0);
+          while (h.client.calls.abort < 2) yield* Effect.yieldNow;
           assert.equal(h.client.calls.abort, 2);
 
           yield* Queue.offer(h.client.input, { type: "agent_settled" });
