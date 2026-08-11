@@ -924,6 +924,12 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
       if (!turn || turn.terminal) {
         turn = yield* beginTurn(ctx, ctx.session.model ? { model: ctx.session.model } : {});
       }
+      if (turn.interruptRequested) {
+        // A run started (or restarted) after an interrupt, e.g. a queued steer
+        // continuation pi drains after the aborted run. Stop it before it
+        // produces output.
+        yield* ctx.client.abort().pipe(Effect.ignore);
+      }
       return;
     }
     if (!turn || turn.terminal) return;
@@ -1046,7 +1052,14 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
         yield* close(ctx);
         return;
       }
-      if (state.value.isStreaming === true) return;
+      if (state.value.isStreaming === true) {
+        if (turn.interruptRequested) {
+          // pi kept running after the interrupt (queued steer continuation);
+          // abort again and wait for the next settlement instead of completing.
+          yield* ctx.client.abort().pipe(Effect.ignore);
+        }
+        return;
+      }
       if (turn.failureMessage && !turn.interruptRequested) {
         yield* failActive(ctx, turn.failureMessage, native);
         return;
@@ -1487,7 +1500,14 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (options: PiAd
         if (!turn || (turnId && turn.id !== turnId))
           return yield* validation("interruptTurn", "No matching active Pi turn.");
         turn.interruptRequested = true;
-        yield* ctx.client.abort().pipe(Effect.mapError((cause) => request("abort", cause)));
+        // Fire-and-forget: pi's abort command waits for idle, so awaiting it
+        // here would hold the thread lock and block new sends. The re-abort in
+        // the settlement/agent_start paths covers runs that continue anyway.
+        yield* ctx.client.abort().pipe(
+          Effect.mapError((cause) => request("abort", cause)),
+          Effect.ignore,
+          Effect.forkIn(ctx.scope),
+        );
       }),
     );
   const unsupported = (operation: string, threadId: ThreadId) =>
