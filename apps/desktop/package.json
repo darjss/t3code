@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/desktop",
-  "version": "0.0.42",
+  "version": "0.0.42-pr.2829",
   "private": true,
   "type": "module",
   "main": "dist-electron/main.cjs",
@@ -40,5 +40,5 @@
     "tailwindcss": "^4.0.0",
     "vite-plus": "catalog:"
   },
-  "productName": "T3 Code (Alpha)"
+  "productName": "T3 Code v2"
 }
