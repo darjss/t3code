@@ -6364,10 +6364,54 @@ export function makeAcpAdapterV2(options: AcpAdapterV2Options): ProviderAdapterV
             yield* awaitRuntimeTeardown();
             const existing = yield* Ref.get(activeTurn);
             if (existing !== null) {
-              return yield* new ProviderAdapterProtocolError({
-                driver,
-                detail: `ACP provider turn ${existing.providerTurnId} is still active`,
-              });
+              // A retained context here is always orphaned: the orchestrator
+              // only starts a turn when the projection shows no running
+              // provider turn, so the durable store already terminalized this
+              // one (startup reconcile on a shared database, or a provider
+              // terminal event that never arrived). Contain the orphan instead
+              // of failing every later turn behind "still active".
+              yield* Effect.logWarning(
+                "ACP start found a still-active provider turn; interrupting the orphan",
+                {
+                  driver,
+                  staleProviderTurnId: existing.providerTurnId,
+                  staleRunId: existing.input.runId,
+                  threadId: turnInput.threadId,
+                  runId: turnInput.runId,
+                },
+              );
+              existing.interrupted = true;
+              yield* cancelPendingRuntimeRequests();
+              if (!existing.finalized) {
+                const promptInFlight =
+                  !existing.promptSettled && !(yield* Deferred.isDone(existing.promptWireSettled));
+                if (promptInFlight) {
+                  yield* runtime.cancel.pipe(Effect.timeoutOption("5 seconds"), Effect.ignore);
+                  const wireSettled = yield* Deferred.await(existing.promptWireSettled).pipe(
+                    Effect.timeoutOption("5 seconds"),
+                  );
+                  if (Option.isNone(wireSettled)) {
+                    // The agent ignored session/cancel and its stream still
+                    // targets the orphan. Quarantine the transport so late
+                    // frames cannot bleed into the replacement turn, then let
+                    // the restart below recycle the process.
+                    yield* runtimeCallbackPermit.withPermit(
+                      Effect.gen(function* () {
+                        const stoppedGeneration = yield* Ref.get(runtimeCallbackGeneration);
+                        yield* quarantineNativeTransportAtGeneration(stoppedGeneration);
+                        yield* advanceRuntimeCallbackGeneration;
+                      }),
+                    );
+                    yield* Ref.set(runtimeRestartRequired, true);
+                  }
+                }
+                yield* finalizeTurn(existing, "interrupted");
+              }
+              // finalizeTurn clears activeTurn before completing `completed`;
+              // when a callback fiber is mid-finalize, waiting on it keeps its
+              // trailing ref write from clobbering the replacement context.
+              yield* Deferred.await(existing.completed).pipe(Effect.timeoutOption("5 seconds"));
+              yield* Ref.update(activeTurn, (current) => (current === existing ? null : current));
             }
             useProviderThreadIdentity(turnInput.providerThread);
             // Session activation can itself invoke client fs/terminal methods.

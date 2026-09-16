@@ -3356,6 +3356,202 @@ describe("AcpAdapterV2", () => {
     }).pipe(Effect.provide(testLayer), Effect.scoped),
   );
 
+  it.effect("recovers a still-active provider turn instead of rejecting the next turn", () =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const idAllocator = yield* IdAllocatorV2;
+      const path = yield* Path.Path;
+      const serverConfig = yield* ServerConfig;
+      const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
+      const native: { current?: AcpSessionRuntime.AcpSessionRuntime["Service"] } = {};
+      const instanceId = ProviderInstanceId.make("acp-stale-turn-start");
+      const adapter = makeAcpAdapterV2({
+        crypto: yield* Crypto.Crypto,
+        instanceId,
+        flavor: {
+          driver: ACP_TEST_DRIVER,
+          capabilities: AcpProviderCapabilitiesV2,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner,
+            mockAgentPath: yield* path.fromFileUrl(
+              new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+            ),
+            environment: { T3_ACP_COMPLETE_FIRST_PROMPT_ON_CANCEL: "1" },
+            protocolEvents,
+            cancelBehavior: "wait-for-prompt",
+            wrapRuntime: (next) => {
+              native.current = next;
+              return next;
+            },
+          }),
+        },
+        fileSystem,
+        idAllocator,
+        serverConfig,
+      });
+      const threadId = ThreadId.make("thread-acp-stale-turn-start");
+      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("session-acp-stale-turn-start"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const now = yield* DateTime.now;
+      yield* runtime.startTurn(
+        makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now }),
+      );
+      // The mock's first prompt stays open until session/cancel. A projection-
+      // side terminalization (startup reconcile on a shared database, a missed
+      // provider terminal event) never reaches the adapter, so this context is
+      // orphaned in memory while the prompt is still live.
+      const firstItem = Option.getOrThrow(
+        yield* runtime.events.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.nativeItemRef?.nativeId === "native-cancel-tool",
+          ),
+          Stream.runHead,
+        ),
+      );
+      if (firstItem.type !== "turn_item.updated" || firstItem.turnItem.providerTurnId === null) {
+        return yield* Effect.die("Expected the first turn to be running");
+      }
+      if (native.current === undefined) {
+        return yield* Effect.die("Expected the ACP runtime");
+      }
+      const firstProviderTurnId = firstItem.turnItem.providerTurnId;
+      yield* pollProtocolMethods(protocolEvents);
+      const nextOutgoing = (method: string) =>
+        Effect.gen(function* () {
+          while (true) {
+            const event = yield* Queue.take(protocolEvents);
+            if (event.direction === "outgoing" && rawProtocolMethod(event) === method) {
+              return event;
+            }
+          }
+        });
+      const secondStart = yield* runtime
+        .startTurn(
+          makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now, ordinal: 2 }),
+        )
+        .pipe(Effect.forkScoped);
+      yield* nextOutgoing("session/cancel");
+      yield* native.current.request("_test/finish-cancel", {});
+      yield* Fiber.join(secondStart);
+      const secondPrompt = yield* nextOutgoing("session/prompt");
+      assert.isTrue(rawProtocolPromptText(secondPrompt).startsWith("test prompt"));
+      const orphanTerminal = Option.getOrThrow(
+        yield* runtime.events.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "turn.terminal" && event.providerTurnId === firstProviderTurnId,
+          ),
+          Stream.runHead,
+        ),
+      );
+      assert.equal(orphanTerminal.type === "turn.terminal" && orphanTerminal.status, "interrupted");
+    }).pipe(Effect.provide(testLayer), Effect.scoped),
+  );
+
+  it.live("restarts the runtime when an orphaned turn ignores session/cancel", () =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const idAllocator = yield* IdAllocatorV2;
+      const path = yield* Path.Path;
+      const serverConfig = yield* ServerConfig;
+      const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
+      const instanceId = ProviderInstanceId.make("acp-stale-turn-restart");
+      const adapter = makeAcpAdapterV2({
+        crypto: yield* Crypto.Crypto,
+        instanceId,
+        flavor: {
+          driver: ACP_TEST_DRIVER,
+          capabilities: AcpProviderCapabilitiesV2,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner,
+            mockAgentPath: yield* path.fromFileUrl(
+              new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+            ),
+            environment: { T3_ACP_HANG_FIRST_PROMPT_FOREVER: "1" },
+            protocolEvents,
+          }),
+        },
+        fileSystem,
+        idAllocator,
+        serverConfig,
+      });
+      const threadId = ThreadId.make("thread-acp-stale-turn-restart");
+      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("session-acp-stale-turn-restart"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const now = yield* DateTime.now;
+      yield* runtime.startTurn(
+        makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now }),
+      );
+      const nextOutgoing = (method: string) =>
+        Effect.gen(function* () {
+          while (true) {
+            const event = yield* Queue.take(protocolEvents);
+            if (event.direction === "outgoing" && rawProtocolMethod(event) === method) {
+              return event;
+            }
+          }
+        });
+      yield* nextOutgoing("session/prompt");
+      yield* pollProtocolMethods(protocolEvents);
+      // The orphan's prompt hangs past the recovery timeout, so the adapter
+      // quarantines the transport and replaces the runtime before prompting.
+      const secondStart = yield* runtime
+        .startTurn(
+          makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now, ordinal: 2 }),
+        )
+        .pipe(Effect.forkScoped);
+      const methods: Array<string> = [];
+      while (true) {
+        const event = yield* Queue.take(protocolEvents);
+        if (event.direction !== "outgoing") continue;
+        const method = rawProtocolMethod(event);
+        if (method === undefined) continue;
+        methods.push(method);
+        if (method === "session/prompt") break;
+      }
+      yield* Fiber.join(secondStart);
+      assert.include(methods, "session/cancel");
+      assert.isTrue(
+        methods.includes("session/resume") || methods.includes("session/load"),
+        `expected the replacement runtime to reattach the session, saw ${methods.join(",")}`,
+      );
+    }).pipe(Effect.provide(testLayer), Effect.scoped),
+  );
+
   it.effect("cancels pending permission requests while interrupting an ACP turn", () =>
     Effect.gen(function* () {
       const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
